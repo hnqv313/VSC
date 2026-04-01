@@ -1,5 +1,9 @@
 # VSC
 
+## Demo
+
+[![Demo](demo.png)](https://www.youtube.com/watch?v=dQw4w9WgXcQ)
+
 ## Setup
 
 ### Clone repo
@@ -12,16 +16,19 @@ cd VSC
 ## Run
 
 ### Print help
+
 ```fish
 python main.py --help
 ```
 
 ### Training
+
 ```fish
 python main.py train --help
 ```
 
 ### Checking
+
 ```fish
 python main.py check --help
 ```

@@ -52,7 +52,10 @@ def run_check(args):
     if args.text:
         incorrect_sentence: str = args.text
     else:
-        incorrect_sentence: str = input("Nhập văn bản: ")
+        try:
+            incorrect_sentence: str = input("Nhập văn bản: ")
+        except KeyboardInterrupt:
+            sys.exit(1)
 
     print(f"\n{COLOR_RED}Câu gốc: {incorrect_sentence}{COLOR_RESET}")
     corrected_sentence = checker.correct_sentence(incorrect_sentence)
@@ -85,7 +88,7 @@ def main():
         "--model_path",
         type=str,
         default="language_model.json",
-        help="Tên file model xuất ra",
+        help="Tên file model xuất ra (Mặc định: language_model.json)",
     )
 
     parser_check = subparsers.add_parser("check", help="Chạy sửa lỗi chính tả")
