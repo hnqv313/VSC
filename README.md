@@ -36,3 +36,5 @@ python main.py check --help
 ### Tuning
 
 Write custom code to evaluate the model. You can see the example in `tune.py`, run `python tune.py`.
+
+For details on configuration and available hyperparameters, see `config.py`.
