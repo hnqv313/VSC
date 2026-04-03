@@ -1,4 +1,5 @@
 import argparse
+import os
 import sys
 
 from config import SpellCheckerConfig
@@ -33,35 +34,50 @@ def run_train(args):
 
 def run_check(args):
     try:
-        config = SpellCheckerConfig(model_path=args.model_path)
+        config = SpellCheckerConfig.from_json(args.config)
+
+        # Ghi đè bằng tham số dòng lệnh (nếu người dùng có nhập)
+        if args.model_path:
+            config.model_path = args.model_path
+        if args.dict_path:
+            config.dict_path = args.dict_path
+
+        # Kiểm tra sự tồn tại của file model trước khi khởi tạo
+        if not os.path.exists(config.model_path):
+            print(
+                f"{COLOR_RED}Lỗi: Không tìm thấy file model tại '{config.model_path}'.{COLOR_RESET}"
+            )
+            print(
+                f"{COLOR_YELLOW}Hãy chạy lệnh 'train' trước hoặc kiểm tra lại đường dẫn.{COLOR_RESET}"
+            )
+            return
 
         checker = MLSpellChecker(
             config=config,
             debug=args.debug,
             detail_log=args.detail,
         )
-    except FileNotFoundError:
-        print(
-            f"{COLOR_RED}Không tìm thấy file '{args.model_path}'. Hãy chạy lệnh 'python main.py train' trước!{COLOR_RESET}"
+
+        incorrect_sentence: str = ""
+        if args.text:
+            incorrect_sentence: str = args.text
+        else:
+            try:
+                incorrect_sentence: str = input("Nhập văn bản: ")
+            except KeyboardInterrupt:
+                sys.exit(1)
+
+        print(f"\n{COLOR_RED}Câu gốc: {incorrect_sentence}{COLOR_RESET}")
+        corrected_sentences = checker.correct_sentence(
+            incorrect_sentence, top_k=args.top_k
         )
-        sys.exit(1)
 
-    incorrect_sentence: str = ""
-    if args.text:
-        incorrect_sentence: str = args.text
-    else:
-        try:
-            incorrect_sentence: str = input("Nhập văn bản: ")
-        except KeyboardInterrupt:
-            sys.exit(1)
-
-    print(f"\n{COLOR_RED}Câu gốc: {incorrect_sentence}{COLOR_RESET}")
-    corrected_sentences = checker.correct_sentence(incorrect_sentence, top_k=args.top_k)
-
-    print(f"{COLOR_GREEN}Các gợi ý sửa lỗi:{COLOR_RESET}")
-    for idx, sent in enumerate(corrected_sentences, 1):
-        print(f"{COLOR_GREEN}  {idx}. {sent}{COLOR_RESET}")
-    print("\n")
+        print(f"{COLOR_GREEN}Các gợi ý sửa lỗi:{COLOR_RESET}")
+        for idx, sent in enumerate(corrected_sentences, 1):
+            print(f"{COLOR_GREEN}  {idx}. {sent}{COLOR_RESET}")
+        print("\n")
+    except Exception as e:
+        print(f"{COLOR_RED}Lỗi vận hành: {e}{COLOR_RESET}")
 
 
 def main():
@@ -101,6 +117,12 @@ def main():
         help="Câu cần sửa",
     )
     parser_check.add_argument(
+        "--config",
+        type=str,
+        default="config.json",
+        help="Đường dẫn đến file cấu hình JSON (Mặc định: config.json)",
+    )
+    parser_check.add_argument(
         "--model_path",
         type=str,
         default="language_model.json",
@@ -138,4 +160,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        pass

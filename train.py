@@ -1,32 +1,139 @@
 import json
 import os
 import re
+import unicodedata
 from collections import Counter
-from typing import List, Set, Tuple
+from typing import List, Set
 
 from config import ModelData
 
+# 1. Toàn bộ nguyên âm Tiếng Việt
+VOWELS = "aeiouyàáãạảăắằẵặẳâấầẫậẩèéẽẹẻêếềễệểìíĩịỉòóõọỏôốồỗộổơớờỡợởùúũụủưứừữựửỳýỹỵỷ"
 
-def clean_vietnamese_text(raw_text: str) -> List[str]:
-    """Lọc các từ không phải Tiếng Việt"""
+# 2. Các nguyên âm mang dấu thanh (Sắc, Huyền, Hỏi, Ngã, Nặng)
+# Gồm 5 dấu x 12 nguyên âm = 60 ký tự
+TONED_VOWELS = "àáãạảắằẵặẳấầẫậẩèéẽẹẻếềễệểìíĩịỉòóõọỏốồỗộổớờỡợởùúũụủứừữựửỳýỹỵỷ"
 
-    # Chuẩn hoá đầu vào
-    text: str = raw_text.lower()
+# 3. Phụ âm đầu hợp lệ (Initial Consonants)
+# Lưu ý: Sắp xếp các cụm dài lên trước (ngh, ch) để Regex ưu tiên match cụm dài.
+INITIALS = r"(ch|gh|gi|kh|ngh|ng|nh|ph|qu|th|tr|b|c|d|đ|g|h|k|l|m|n|p|r|s|t|v|x)"
 
-    # Loại bỏ các từ không có trong danh sách
-    vie_chars: str = (
-        "a-zàáãạảăắằẵặẳâấầẫậẩđèéẽẹẻêếềễệểìíĩịỉòóõọỏôốồỗộổơớờỡợởùúũụủưứừữựửỳýỹỵỷ"
+# 4. Phụ âm cuối hợp lệ (Final Consonants)
+FINALS = r"(ch|ng|nh|c|m|n|p|t)"
+
+# Biểu thức Regex kiểm tra Cấu trúc: [Phụ âm đầu] + [Nguyên âm] + [Phụ âm cuối]
+# Dấu ? nghĩa là có thể không có (ví dụ: "ai" không có phụ âm đầu/cuối)
+SYLLABLE_PATTERN = re.compile(rf"^{INITIALS}?([{VOWELS}]+){FINALS}?$")
+
+
+def _get_toned_variations(base_char: str) -> str:
+    variations = {
+        "a": "àáảãạ",
+        "ă": "ằắẳẵặ",
+        "â": "ầấẩẫậ",
+        "e": "èéẻẽẹ",
+        "ê": "ềếểễệ",
+        "i": "ìíỉĩị",
+        "o": "òóỏõọ",
+        "ô": "ồốổỗộ",
+        "ơ": "ờớởỡợ",
+        "u": "ùúủũụ",
+        "ư": "ừứửữự",
+        "y": "ỳýỷỹỵ",
+    }
+    return variations.get(base_char, "")
+
+
+def is_valid_vietnamese_word(word: str) -> bool:
+    # Đưa các ký tự NFD (tổ hợp) về dạng NFC (dựng sẵn) để Regex hoạt động chính xác.
+    word = unicodedata.normalize("NFC", word)
+
+    # Độ dài tối thiểu 1 và tối đa 7 ("nghiêng", "chương", "khuếch")
+    if not (1 <= len(word) <= 7):
+        return False
+
+    # Mỗi âm tiết CHỈ CÓ TỐI ĐA 1 DẤU THANH
+    # Nếu đếm ra 2 ký tự có dấu (vd: "hòá") -> Cook ngay!
+    tone_count = sum(1 for char in word if char in TONED_VOWELS)
+    if tone_count > 1:
+        return False
+
+    # Khớp cấu trúc (Đầu + Giữa + Cuối) & Ký tự hợp lệ
+    match = SYLLABLE_PATTERN.match(word)
+    if not match:
+        return False
+
+    initial = match.group(1) or ""
+    vowel_part = match.group(2)
+
+    # Cụm nguyên âm không được quá dài (Max 3 ký tự: "iêu", "oai", "uyê")
+    if len(vowel_part) > 3:
+        return False
+
+    # Luật chính tả c, k / g, gh / ng, ngh
+    # Nhóm nguyên âm trước (front vowels): e, ê, i, y (bao gồm cả dạng có dấu)
+    front_vowel_base = "eêiy"
+
+    # Kiểm tra xem nguyên âm đầu tiên có thuộc nhóm (e, ê, i, y) không
+    first_v_char = vowel_part[0]
+    # Bóc tách dấu thanh để lấy ký tự gốc so sánh
+    is_front_vowel = any(
+        first_v_char in _get_toned_variations(base) for base in front_vowel_base
     )
-    pattern: str = rf"[^{vie_chars}\s]"
-    # Các từ ví dụ như "T0i" qua sàng lọc sẽ thành ["t", "i"]
-    # Các chữ cái đơn lẻ hoặc không có nghĩa khi qua bước training
-    # sẽ có xác suất xuất hiện rất thấp tuỳ dữ liệu đầu vào
-    text: str = re.sub(pattern, " ", text)
 
-    # Lọc khoảng trắng
-    text: str = re.sub(r"\s+", " ", text).strip()
+    # Luật: "gh", "ngh", "k" BẮT BUỘC phải đi với e, ê, i, y
+    if initial in ["gh", "ngh", "k"] and not is_front_vowel:
+        return False
 
-    return text.split()
+    # Luật: "g", "ng", "c" KHÔNG ĐƯỢC đi với e, ê, i, y
+    if initial in ["g", "ng", "c"] and is_front_vowel:
+        # Ngoại lệ duy nhất: "g" đi với "i" tạo thành "gi" đã được bóc tách ở INITIALS
+        # (Chữ "giêng" sẽ có initial="gi", vowel="ê", final="ng" -> Hợp lệ)
+        return False
+
+    return True
+
+
+def extract_valid_sequences(raw_text: str) -> List[List[str]]:
+    """
+    Tách văn bản thành danh sách các chuỗi từ hợp lệ.
+    Dấu câu và các "từ rác" sẽ đóng vai trò như vách ngăn, chia đứt câu.
+    VD: "Hôm nay, tôi đi học." -> [["hôm", "nay"], ["tôi", "đi", "học"]]
+    """
+    text = raw_text.lower()
+
+    # 1. Thay thế mọi dấu câu và ký tự ngắt dòng bằng một "vách ngăn" đặc biệt là dấu |
+    # (Đảm bảo các từ sát dấu câu không bị dính vào nhau)
+    text = re.sub(r'[.,!?;:()\[\]{}""\'\n\r\t\-]', " | ", text)
+
+    raw_words = text.split()
+
+    sequences: List[List[str]] = []
+    current_seq: List[str] = []
+
+    for w in raw_words:
+        # Nếu gặp vách ngăn (dấu câu) -> Cắt đứt chuỗi hiện tại
+        if w == "|":
+            if current_seq:
+                sequences.append(current_seq)
+                current_seq = []
+            continue
+
+        # Kiểm tra từ
+        if is_valid_vietnamese_word(w):
+            current_seq.append(w)
+        else:
+            # Nếu gặp một TỪ RÁC (vd: iphone, 17), từ đó cũng sẽ trở thành vách ngăn
+            # -> Cắt đứt chuỗi hiện tại để không tạo Bigram xuyên qua từ rác.
+            if current_seq:
+                sequences.append(current_seq)
+                current_seq = []
+
+    # Đưa chuỗi cuối cùng (nếu có) vào danh sách
+    if current_seq:
+        sequences.append(current_seq)
+
+    return sequences
 
 
 def train_and_save_model(
@@ -36,33 +143,24 @@ def train_and_save_model(
 ) -> None:
     print("Training N-grams từ Corpus...")
 
-    # Lọc và trả về bộ từ khoá xếp theo thứ tự tương ứng
-    # với đầu vào
-    words: List[str] = clean_vietnamese_text(text_corpus)
+    unigram_counts: Counter[str] = Counter()
+    bigram_counts: Counter[str] = Counter()
+    vocab_set: Set[str] = set()
 
-    print("Thống kê Unigram & Bigram...")
-    # Đếm số lần xuất hiện của các từ
-    unigram_counts: Counter[str] = Counter(words)
+    print("Đang tách câu và phân tích ngữ cảnh...")
+    # Lấy ra tất cả các "cụm từ liên tiếp hợp lệ" từ Corpus
+    valid_sequences = extract_valid_sequences(text_corpus)
 
-    # Ghép 2 từ đứng cạnh nhau để sinh tổ hợp
-    bigrams: zip[Tuple[str, str]] = zip(words, words[1:])
-    # Đếm tần suất xuất hiện tổ hợp đó trong đầu vào
-    bigram_counts: Counter[str] = Counter([f"{w1} {w2}" for w1, w2 in bigrams])
+    for seq in valid_sequences:
+        # 1. Đếm Unigram và cập nhật Vocab
+        unigram_counts.update(seq)
+        vocab_set.update(seq)
 
-    vocab_set: Set[str] = set(words)
-
-    # Duyệt theo từng dòng để không bị lọt Bigram xuyên dòng
-    for line in text_corpus.split("\n"):
-        words: List[str] = clean_vietnamese_text(line)
-        if not words:
-            continue
-
-        unigram_counts.update(words)
-        vocab_set.update(words)
-
-        # Ghép 2 từ đứng cạnh nhau trong cùng 1 dòng
-        bigrams = zip(words, words[1:])
-        bigram_counts.update([f"{w1} {w2}" for w1, w2 in bigrams])
+        # 2. Đếm Bigram
+        # Chắc chắn 100% các từ trong seq đứng sát nhau và không bị chặn bởi dấu câu nào
+        if len(seq) >= 2:
+            bigrams = zip(seq, seq[1:])
+            bigram_counts.update([f"{w1} {w2}" for w1, w2 in bigrams])
 
     print(f"-> Vocab từ Corpus: {len(vocab_set)} từ.")
 
@@ -70,17 +168,14 @@ def train_and_save_model(
         print(f"Đang nạp từ điển ngoài: '{external_dict_path}'...")
         try:
             with open(external_dict_path, "r", encoding="utf-8") as f:
-                # Đọc từng dòng, xoá khoảng trắng thừa và chuyển thành chữ thường
-                external_words = [line.strip().lower() for line in f if line.strip()]
-
-                # Chạy qua hàm clean để đảm bảo từ điển ngoài không dính rác
+                # Chỉ lấy những từ đạt chuẩn tiếng Việt trong từ điển ngoài
                 clean_external_words = []
-                for w in external_words:
-                    clean_external_words.extend(clean_vietnamese_text(w))
+                for line in f:
+                    w = line.strip().lower()
+                    if is_valid_vietnamese_word(w):
+                        clean_external_words.append(w)
 
-                # Gộp vào tập Vocab hiện tại
                 vocab_set.update(clean_external_words)
-
             print(f"-> Đã nạp thêm từ vựng. Tổng Vocab hiện tại: {len(vocab_set)} từ.")
         except FileNotFoundError:
             print(f"File not found: '{external_dict_path}'. Skip this step.")

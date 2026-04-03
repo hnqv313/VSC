@@ -1,3 +1,6 @@
+import dataclasses
+import json
+import os
 from dataclasses import dataclass
 from typing import Dict, List, TypedDict
 
@@ -33,9 +36,9 @@ class SpellCheckerConfig:
 
     # 3. Trọng số chấm điểm (Scoring Weights)
     # Cân bằng quyền lực giữa Mặt chữ và Ngữ cảnh
-    sim_weight: int = 10
+    sim_weight: int = 5
     # Lũy thừa áp dụng cho điểm giống nhau về mặt chữ (Similarity Score).
-    # - Nếu TĂNG (VD: 5): AI trở nên rất "Bảo thủ". Nó bắt buộc từ được chọn phải
+    # - Nếu TĂNG (VD: 10): AI trở nên rất "Bảo thủ". Nó bắt buộc từ được chọn phải
     #   có mặt chữ cực kỳ giống với từ user gõ, dominate điểm ngữ cảnh.
     # - Nếu GIẢM (VD: 1): AI dễ dãi với mặt chữ, dễ bị dominate bởi điểm ngữ cảnh.
 
@@ -88,3 +91,24 @@ class SpellCheckerConfig:
     # Tự động loại bỏ Top K từ phổ biến nhất khỏi danh sách được phép Neo
 
     beam_width: int = 5  # Chỉ giữ lại x nhánh Viterbi tốt nhất mỗi bước
+
+    @classmethod
+    def from_json(cls, json_path: str) -> "SpellCheckerConfig":
+        """Đọc cấu hình từ file JSON (nếu có) và ghi đè lên giá trị mặc định."""
+        if os.path.exists(json_path):
+            try:
+                with open(json_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+
+                # Chỉ lấy những key có tồn tại trong định nghĩa dataclass để tránh lỗi
+                valid_keys = {f.name for f in dataclasses.fields(cls)}
+                filtered_data = {k: v for k, v in data.items() if k in valid_keys}
+
+                return cls(**filtered_data)
+            except Exception as e:
+                print(
+                    f"Lỗi khi đọc file config {json_path}: {e}. Đang dùng config mặc định."
+                )
+
+        # Nếu file không tồn tại, trả về cấu hình mặc định
+        return cls()

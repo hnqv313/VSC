@@ -1,4 +1,3 @@
-import difflib
 import json
 import math
 from typing import Dict, List, Set, Tuple
@@ -67,6 +66,11 @@ class MLSpellChecker:
 
         self.kb_coords = get_keyboard_coordinates(keyboard_matrix=keyboard_matrix)
         print(f"Done! The dictionary has {len(self.vocab)} words.")
+
+        # Tìm Log của từ xuất hiện nhiều nhất để chuẩn hóa Tần suất về 0.0 -> 1.0
+        self.max_unigram_log = (
+            math.log2(max(self.unigrams.values()) + 1) if self.unigrams else 1.0
+        )
 
     # MÀNG LỌC ĐỘ DÀI (Tránh rác & Tăng tốc difflib)
     def is_valid_length(self, cand_telex: str, error_len: int) -> bool:
@@ -229,35 +233,46 @@ class MLSpellChecker:
         # sim_score: float = difflib.SequenceMatcher(
         #     None, error_telex, cand_telex
         # ).ratio()
-        sim_score: float = self.keyboard_aware_similarity(error_telex, cand_telex)
+        sim_norm: float = self.keyboard_aware_similarity(error_telex, cand_telex)
 
         # Frequency Score (Dùng Add-1 Smoothing)
-        freq_score: int = self.unigrams.get(candidate, 1)
+        freq = self.unigrams.get(candidate, 1)
+        freq_norm: float = math.log2(freq + 1) / self.max_unigram_log
 
         # Context Score (Bigram)
-        context_score: float = 1.0
+        context_norm: float = 0.0
         if prev_word:
             bigram_key = f"{prev_word} {candidate}"
-            context_score = float(self.bigrams.get(bigram_key, 1))
+            bg_count = self.bigrams.get(bigram_key, 0)
+            prev_count = self.unigrams.get(prev_word, 1)
+
+            context_norm = min(bg_count / prev_count, 1.0)
 
             # Stutter Penalty (Phạt nếu lặp từ)
             if candidate == prev_word:
-                context_score *= self.cfg.stutter_penalty
+                context_norm *= self.cfg.stutter_penalty
 
-        # TỔNG ĐIỂM
-        total_score: float = (
-            (sim_score**self.cfg.sim_weight)
-            * (math.log2(freq_score + 1) ** self.cfg.freq_weight)
-            * (context_score**self.cfg.context_weight)
+        # TÍNH TỔNG ĐIỂM BƯỚC NHẢY (Quy về thang 100)
+        w_sim = getattr(self.cfg, "sim_weight", 0.0)
+        w_freq = getattr(self.cfg, "freq_weight", 0.0)
+        w_ctx = getattr(self.cfg, "context_weight", 0.0)
+
+        total_weight = w_sim + w_freq + w_ctx
+
+        # Dùng phép CỘNG có trọng số
+        step_score = (
+            ((sim_norm * w_sim) + (freq_norm * w_freq) + (context_norm * w_ctx))
+            / total_weight
+            * 100.0
         )
 
         # EXACT MATCH BONUS BẰNG TỪ ĐIỂN NGOÀI:
         # Chỉ thưởng khi từ ứng viên giống 100% từ gõ vào VÀ từ đó phải là một từ có nghĩa trong wordlist.dic
         if candidate == error_word and candidate in self.standard_dict:
-            total_score *= self.cfg.exact_match_bonus
+            step_score += getattr(self.cfg, "exact_match_bonus", 0.0) * 10.0
             if self.debug and self.detail_log:
                 print(
-                    f"         TỪ CHUẨN TỪ ĐIỂN! Thưởng x{self.cfg.exact_match_bonus} điểm -> {total_score:.4f}"
+                    f"         TỪ CHUẨN TỪ ĐIỂN! Thưởng x{self.cfg.exact_match_bonus} điểm -> {step_score:.4f}"
                 )
 
         if self.debug and self.detail_log:
@@ -265,18 +280,12 @@ class MLSpellChecker:
             print(
                 f"      ➜ Xét bước nhảy: '{prev_str}' -> '{candidate}' (Gõ sai: '{error_word}', Telex: {cand_telex})"
             )
-            print(
-                f"         + Sim     = {sim_score:.2f}  (Mũ {self.cfg.sim_weight} -> {sim_score**self.cfg.sim_weight:.3f})"
-            )
-            print(
-                f"         + Freq    = {freq_score:<4} (Log2 -> {math.log2(freq_score + 1):.2f})"
-            )
-            print(
-                f"         + Context = {context_score:<4} (Mũ {self.cfg.context_weight} -> {context_score**self.cfg.context_weight:.2f})"
-            )
-            print(f"         = ĐIỂM BƯỚC NHẢY = {total_score:.4f}")
+            print(f"         + Sim     = {sim_norm:.2f} * {w_sim}")
+            print(f"         + Freq    = {freq_norm:.2f} * {w_freq}")
+            print(f"         + Context = {context_norm:.2f} * {w_ctx}")
+            print(f"         = ĐIỂM BƯỚC NHẢY (Thang 100) = {step_score:.2f}")
 
-        return total_score
+        return step_score
 
     def is_delayed_anchor(self, w: str, next_w: str | None) -> bool:
         if not hasattr(self, "standard_dict") or w not in self.standard_dict:
@@ -393,8 +402,8 @@ class MLSpellChecker:
                             curr_cand, current_word, prev_cand
                         )
 
-                        # ĐIỂM TÍCH LŨY = Điểm lịch sử * Điểm bước nhảy
-                        total_score = prev_score * step_score
+                        # ĐIỂM TÍCH LŨY = Điểm lịch sử + Điểm bước nhảy
+                        total_score = prev_score + step_score
 
                         new_path = prev_path + [curr_cand]
                         # Nối chuỗi để làm key phân biệt nhánh
@@ -438,7 +447,7 @@ class MLSpellChecker:
 
                 print("-" * 82)
                 print(
-                    f"| {'ỨNG VIÊN':<12} | {'TUYẾN TỐT NHẤT':<20} | {'LỊCH SỬ * ĐIỂM BƯỚC NHẢY':<25} | {'TỔNG ĐIỂM':<12} |"
+                    f"| {'ỨNG VIÊN':<12} | {'TUYẾN TỐT NHẤT':<20} | {'LỊCH SỬ + ĐIỂM BƯỚC NHẢY':<25} | {'TỔNG ĐIỂM':<12} |"
                 )
                 print("-" * 82)
                 for item in step_log_data[:20]:
