@@ -50,6 +50,20 @@ def train_and_save_model(
     bigram_counts: Counter[str] = Counter([f"{w1} {w2}" for w1, w2 in bigrams])
 
     vocab_set: Set[str] = set(words)
+
+    # Duyệt theo từng dòng để không bị lọt Bigram xuyên dòng
+    for line in text_corpus.split("\n"):
+        words: List[str] = clean_vietnamese_text(line)
+        if not words:
+            continue
+
+        unigram_counts.update(words)
+        vocab_set.update(words)
+
+        # Ghép 2 từ đứng cạnh nhau trong cùng 1 dòng
+        bigrams = zip(words, words[1:])
+        bigram_counts.update([f"{w1} {w2}" for w1, w2 in bigrams])
+
     print(f"-> Vocab từ Corpus: {len(vocab_set)} từ.")
 
     if external_dict_path:
@@ -71,11 +85,23 @@ def train_and_save_model(
         except FileNotFoundError:
             print(f"File not found: '{external_dict_path}'. Skip this step.")
 
+    # Sort theo tần suất giảm dần
+    sorted_unigrams = dict(
+        sorted(unigram_counts.items(), key=lambda x: x[1], reverse=True)
+    )
+
+    sorted_bigrams = dict(
+        sorted(bigram_counts.items(), key=lambda x: x[1], reverse=True)
+    )
+
+    # Vocab sort theo alphabet
+    sorted_vocab = sorted(vocab_set)
+
     # Khởi tạo cấu trúc lưu model
     model_data: ModelData = {
-        "vocab": list(vocab_set),
-        "unigrams": dict(unigram_counts),
-        "bigrams": dict(bigram_counts),
+        "bigrams": sorted_bigrams,
+        "unigrams": sorted_unigrams,
+        "vocab": sorted_vocab,
     }
 
     print("Writing to JSON...")

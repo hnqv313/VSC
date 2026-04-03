@@ -3,6 +3,8 @@ import json
 import math
 from typing import Dict, List, Set, Tuple
 
+import Levenshtein
+
 from config import SpellCheckerConfig
 from layout import get_keyboard_coordinates, keyboard_matrix
 from text_utils import to_standard_telex
@@ -36,8 +38,59 @@ class MLSpellChecker:
 
         self.telex_vocab_list: List[str] = list(self.telex_to_vocab.keys())
 
+        self.standard_dict: Set[str] = set()
+        if self.cfg.dict_path:
+            try:
+                with open(self.cfg.dict_path, "r", encoding="utf-8") as f:
+                    self.standard_dict = {
+                        line.strip().lower() for line in f if line.strip()
+                    }
+                print(
+                    f"Đã nạp {len(self.standard_dict)} từ chuẩn từ '{self.cfg.dict_path}'."
+                )
+            except FileNotFoundError:
+                print(
+                    f"Không tìm thấy từ điển '{self.cfg.dict_path}'. Tính năng liên quan sẽ bị vô hiệu hoá."
+                )
+
+        sorted_unigrams = sorted(
+            self.unigrams.items(), key=lambda item: item[1], reverse=True
+        )
+        top_k = getattr(self.cfg, "auto_ambiguous_top_k", 50)
+        self.dynamic_ambiguous_words: Set[str] = {
+            word for word, _ in sorted_unigrams[:top_k]
+        }
+        if self.debug:
+            print(
+                f"Tự động cấm Anchor {len(self.dynamic_ambiguous_words)} từ phổ biến: {list(self.dynamic_ambiguous_words)[:10]}..."
+            )
+
         self.kb_coords = get_keyboard_coordinates(keyboard_matrix=keyboard_matrix)
         print(f"Done! The dictionary has {len(self.vocab)} words.")
+
+    # MÀNG LỌC ĐỘ DÀI (Tránh rác & Tăng tốc difflib)
+    def is_valid_length(self, cand_telex: str, error_len: int) -> bool:
+        cand_len = len(cand_telex)
+        # Bỏ qua từ quá ngắn (< 3) NẾU từ gốc gõ vào đủ dài (>= 3)
+        if error_len >= 3 and cand_len < 3:
+            return False
+        # Bỏ qua những từ chênh lệch độ dài quá 3 ký tự
+        if abs(cand_len - error_len) > 3:
+            return False
+        return True
+
+    def get_fast_close_matches(
+        self, target: str, possibilities: List[str], n: int, cutoff: float
+    ) -> List[str]:
+        results = []
+        for p in possibilities:
+            sim = Levenshtein.ratio(target, p)
+            if sim >= cutoff:
+                results.append((p, sim))
+
+        # Sắp xếp theo độ giống nhau giảm dần
+        results.sort(key=lambda x: x[1], reverse=True)
+        return [r[0] for r in results[:n]]
 
     # SINH CANDIDATE
     def get_candidates(
@@ -47,6 +100,7 @@ class MLSpellChecker:
 
         # Ép chữ lỗi về chuẩn Telex
         error_telex = to_standard_telex(error_word)
+        error_len = len(error_telex)
 
         # Lọc từ Bigram (Những từ từng đi liền sau prev_word)
         if prev_word:
@@ -65,10 +119,15 @@ class MLSpellChecker:
                         context_telex_to_word[ct] = []
                     context_telex_to_word[ct].append(cw)
 
-                context_telex_list = list(context_telex_to_word.keys())
+                # Áp dụng màng lọc độ dài trước khi đưa vào difflib
+                context_telex_list = [
+                    t
+                    for t in context_telex_to_word.keys()
+                    if self.is_valid_length(t, error_len)
+                ]
 
                 # Fuzzy match trên tập con TELEX
-                context_telex_matches: List[str] = difflib.get_close_matches(
+                context_telex_matches: List[str] = self.get_fast_close_matches(
                     error_telex,
                     context_telex_list,
                     n=self.cfg.top_n,
@@ -83,10 +142,14 @@ class MLSpellChecker:
 
         # Bổ sung từ Unigram nếu chưa đủ số lượng top_n
         if len(candidates) < self.cfg.top_n:
+            filtered_global_telex = [
+                t for t in self.telex_vocab_list if self.is_valid_length(t, error_len)
+            ]
+
             # Tìm trên toàn bộ từ điển TELEX
-            general_telex_matches: List[str] = difflib.get_close_matches(
+            general_telex_matches: List[str] = self.get_fast_close_matches(
                 error_telex,
-                self.telex_vocab_list,
+                filtered_global_telex,
                 n=self.cfg.top_n,
                 cutoff=self.cfg.cutoff,
             )
@@ -184,9 +247,18 @@ class MLSpellChecker:
         # TỔNG ĐIỂM
         total_score: float = (
             (sim_score**self.cfg.sim_weight)
-            * math.log2(freq_score + 1)
+            * (math.log2(freq_score + 1) ** self.cfg.freq_weight)
             * (context_score**self.cfg.context_weight)
         )
+
+        # EXACT MATCH BONUS BẰNG TỪ ĐIỂN NGOÀI:
+        # Chỉ thưởng khi từ ứng viên giống 100% từ gõ vào VÀ từ đó phải là một từ có nghĩa trong wordlist.dic
+        if candidate == error_word and candidate in self.standard_dict:
+            total_score *= self.cfg.exact_match_bonus
+            if self.debug and self.detail_log:
+                print(
+                    f"         TỪ CHUẨN TỪ ĐIỂN! Thưởng x{self.cfg.exact_match_bonus} điểm -> {total_score:.4f}"
+                )
 
         if self.debug and self.detail_log:
             prev_str = prev_word if prev_word else "[Đầu câu]"
@@ -194,113 +266,171 @@ class MLSpellChecker:
                 f"      ➜ Xét bước nhảy: '{prev_str}' -> '{candidate}' (Gõ sai: '{error_word}', Telex: {cand_telex})"
             )
             print(
-                f"         + Sim     = {sim_score:.2f}  (Mũ {self.sim_weight} -> {sim_score**self.sim_weight:.3f})"
+                f"         + Sim     = {sim_score:.2f}  (Mũ {self.cfg.sim_weight} -> {sim_score**self.cfg.sim_weight:.3f})"
             )
             print(
                 f"         + Freq    = {freq_score:<4} (Log2 -> {math.log2(freq_score + 1):.2f})"
             )
             print(
-                f"         + Context = {context_score:<4} (Mũ {self.context_weight} -> {context_score**self.context_weight:.2f})"
+                f"         + Context = {context_score:<4} (Mũ {self.cfg.context_weight} -> {context_score**self.cfg.context_weight:.2f})"
             )
             print(f"         = ĐIỂM BƯỚC NHẢY = {total_score:.4f}")
 
         return total_score
 
+    def is_delayed_anchor(self, w: str, next_w: str | None) -> bool:
+        if not hasattr(self, "standard_dict") or w not in self.standard_dict:
+            return False
+        if len(w) < 2 or w in getattr(self, "dynamic_ambiguous_words", set()):
+            return False
+        if next_w is None:
+            return True
+
+        # Check Bigram Validation
+        if f"{w} {next_w}" in self.bigrams:
+            return True
+        return False
+
     # VITERBI DECODING (Sửa lỗi theo ngữ cảnh toàn câu)
-    def correct_sentence(self, sentence: str) -> str:
+    def correct_sentence(self, sentence: str, top_k: int = 5) -> List[str]:
         words: List[str] = sentence.lower().split()
         if not words:
-            return ""
+            return []
 
-        # LƯU TRỮ CÁC ĐƯỜNG ĐI: {ứng_viên_hiện_tại: (tổng_điểm, [lịch_sử_các_từ_từ_đầu_câu])}
-        paths: Dict[str, Tuple[float, List[str]]] = {}
+        # Cấu trúc: { "chuỗi_full_câu": (tổng_điểm, [list_từ], từ_cuối_cùng) }
+        paths: Dict[str, Tuple[float, List[str], str]] = {}
 
-        # KHỞI TẠO VỚI TỪ ĐẦU TIÊN
-        first_word = words[0]
-        self.get_candidates(first_word, prev_word=None)
-        first_candidates = self.get_candidates(first_word, prev_word=None)
-
-        if first_word in self.vocab and first_word not in first_candidates:
-            first_candidates.append(first_word)  # Luôn giữ lại từ gốc nếu nó có nghĩa
-        if not first_candidates:
-            first_candidates = [first_word]
-
-        if self.debug:
-            print(f"\n[VITERBI] Từ thứ 1: '{first_word}'")
-
-        for cand in first_candidates:
-            score = self.calculate_score(cand, first_word, prev_word=None)
-            paths[cand] = (score, [cand])
-            if self.debug:
-                print(f"  Khởi tạo nhánh: '{cand} (TÍCH LŨY = {score:.4f})'")
+        # Biến cờ: Báo hiệu từ tiếp theo phải khởi tạo nhánh mới
+        reset_context_next_step = True
 
         # DUYỆT QUA CÁC TỪ CÒN LẠI
-        for i in range(1, len(words)):
-            current_word = words[i]
-            new_paths: Dict[str, Tuple[float, List[str]]] = {}
-
-            # Sinh ứng viên
-            candidates_set = set()
-            for prev_cand in paths.keys():
-                cands = self.get_candidates(current_word, prev_word=prev_cand)
-                candidates_set.update(cands)
-
-            # Dự phòng thêm ứng viên chung (không ngữ cảnh)
-            candidates_set.update(self.get_candidates(current_word, prev_word=None))
-
-            candidates = list(candidates_set)
-            if current_word in self.vocab and current_word not in candidates:
-                candidates.append(current_word)
-            if not candidates:
-                candidates = [current_word]
+        for i, current_word in enumerate(words):
+            new_paths: Dict[str, Tuple[float, List[str], str]] = {}
+            is_anchor = False
+            is_garbage = False
 
             if self.debug:
                 print(f"\n[VITERBI] Từ thứ {i + 1}: '{current_word}'")
+
+            # LOOKAHEAD: Nhìn trộm từ tiếp theo
+            next_word = words[i + 1] if i + 1 < len(words) else None
+
+            # NEO TỪ TRỄ (Delayed Anchor)
+            if self.is_delayed_anchor(current_word, next_word):
+                candidates = [current_word]
+                is_anchor = True
+                if self.debug:
+                    print(f"  ➜ Đã Neo cứng (Delayed Anchor Passed): '{current_word}'")
+            else:
+                candidates_set = set()
+                if not reset_context_next_step and paths:
+                    # Lấy từ cuối cùng của nhánh từ index 2 của Tuple
+                    for _, _, prev_cand in paths.values():
+                        candidates_set.update(
+                            self.get_candidates(current_word, prev_word=prev_cand)
+                        )
+
+                candidates_set.update(self.get_candidates(current_word, prev_word=None))
+                candidates = list(candidates_set)
+
+                # candidates = candidates[: self.cfg.top_n]
+
+                # BỎ CUỘC
+                if candidates:
+                    best_sim = max(
+                        [Levenshtein.ratio(current_word, c) for c in candidates]
+                    )
+                    if best_sim < self.cfg.cutoff:
+                        candidates = [current_word]
+                        is_garbage = True
+                        if self.debug:
+                            print(
+                                f"  ➜ Bỏ cuộc: Rác/Từ lạ (Max Sim {best_sim:.2f} < {self.cfg.cutoff})."
+                            )
+                else:
+                    candidates = [current_word]
 
             step_log_data: List[Dict] = []
 
             # TÌM ĐƯỜNG NỐI TỐT NHẤT TỪ BƯỚC TRƯỚC SANG BƯỚC HIỆN TẠI
             for curr_cand in candidates:
-                best_score = -1.0
-                best_path = []
-                best_prev = None
-                best_step_score = 0.0
-                best_prev_score = 0.0
-
-                # Thử nối curr_cand vào tất cả các nhánh (prev_cand) của bước trước
-                for prev_cand, (prev_score, prev_path) in paths.items():
-                    # Điểm bước nhảy (Bigram Context + Similarity + Frequency)
+                # TRƯỜNG HỢP A: Khởi tạo nhánh mới (Do đứng đầu câu, hoặc đứng sau từ Rác)
+                if reset_context_next_step or not paths:
+                    # Truyền prev_word = None
                     step_score = self.calculate_score(
-                        curr_cand, current_word, prev_cand
+                        curr_cand, current_word, prev_word=None
                     )
 
-                    # ĐIỂM TÍCH LŨY = Điểm lịch sử * Điểm bước nhảy
-                    total_score = prev_score * step_score
+                    # Nếu đang ở giữa câu mà bị reset, ta phải nhặt lại lịch sử đường đi tốt nhất trước đó
+                    best_history = []
+                    if paths:
+                        best_past_key = max(paths.keys(), key=lambda k: paths[k][0])
+                        best_history = paths[best_past_key][1]
 
-                    # Lưu lại nhánh có điểm tích lũy cao nhất dẫn đến curr_cand
-                    if total_score > best_score:
-                        best_score = total_score
-                        best_path = prev_path + [curr_cand]
+                    total_score = step_score
+                    new_path = best_history + [curr_cand]
+
+                    # Nối chuỗi để làm key phân biệt nhánh
+                    new_path_key = " ".join(new_path)
+                    new_paths[new_path_key] = (total_score, new_path, curr_cand)
+
+                    if self.debug:
+                        step_log_data.append(
+                            {
+                                "cand": curr_cand,
+                                "path": f"[MỚI] -> {curr_cand}",
+                                "calc_str": f"(Khởi tạo: {step_score:.4f})",
+                                "score": total_score,
+                            }
+                        )
+
+                # TRƯỜNG HỢP B: Nối tiếp chuỗi Markov bình thường
+                else:
+                    # Thử nối curr_cand vào tất cả các nhánh (prev_cand) của bước trước
+                    for path_key, (prev_score, prev_path, prev_cand) in paths.items():
+                        # Điểm bước nhảy (Bigram Context + Similarity + Frequency)
+                        step_score = self.calculate_score(
+                            curr_cand, current_word, prev_cand
+                        )
+
+                        # ĐIỂM TÍCH LŨY = Điểm lịch sử * Điểm bước nhảy
+                        total_score = prev_score * step_score
+
+                        new_path = prev_path + [curr_cand]
+                        # Nối chuỗi để làm key phân biệt nhánh
+                        new_path_key = " ".join(new_path)
+                        new_paths[new_path_key] = (total_score, new_path, curr_cand)
 
                         if self.debug:
-                            best_prev = prev_cand
-                            best_step_score = step_score
-                            best_prev_score = prev_score
-
-                new_paths[curr_cand] = (best_score, best_path)
-
-                if self.debug and best_prev:
-                    step_log_data.append(
-                        {
-                            "cand": curr_cand,
-                            "path": f"{best_prev} -> {curr_cand}",
-                            "calc_str": f"({best_prev_score:.4f} * {best_step_score:.4f})",
-                            "score": best_score,
-                        }
-                    )
+                            step_log_data.append(
+                                {
+                                    "cand": curr_cand,
+                                    "path": f"{prev_cand} -> {curr_cand}",
+                                    "calc_str": f"({prev_score:.4f} * {step_score:.4f})",
+                                    "score": total_score,
+                                }
+                            )
 
             # Cập nhật các đường đi cho vòng lặp tiếp theo
             paths = new_paths
+
+            # QUYẾT ĐỊNH TRẠNG THÁI CHO TỪ TIẾP THEO
+            if is_garbage:
+                # Nếu từ hiện tại là rác, NGẮT CHUỖI. Từ tiếp theo sẽ khởi tạo nhánh mới.
+                reset_context_next_step = True
+            else:
+                # Nếu từ hiện tại là Neo cứng hoặc sửa thành công, CHO PHÉP NỐI CHUỖI.
+                reset_context_next_step = False
+
+            # BEAM SEARCH PRUNING (TỈA CÀNH)
+            # Nếu số lượng nhánh vượt quá beam_width, chỉ giữ lại những nhánh có tổng điểm cao nhất
+            if len(paths) > getattr(self.cfg, "beam_width", 5):
+                # Sắp xếp paths theo điểm (score nằm ở index 0 của value tuple) giảm dần
+                sorted_paths = sorted(
+                    paths.items(), key=lambda item: item[1][0], reverse=True
+                )
+                # Cắt lấy top K
+                paths = dict(sorted_paths[: self.cfg.beam_width])
 
             if self.debug and step_log_data:
                 # Sắp xếp theo score từ cao xuống thấp
@@ -311,69 +441,24 @@ class MLSpellChecker:
                     f"| {'ỨNG VIÊN':<12} | {'TUYẾN TỐT NHẤT':<20} | {'LỊCH SỬ * ĐIỂM BƯỚC NHẢY':<25} | {'TỔNG ĐIỂM':<12} |"
                 )
                 print("-" * 82)
-                for item in step_log_data:
+                for item in step_log_data[:20]:
                     print(
                         f"| {item['cand']:<12} | {item['path']:<20} | {item['calc_str']:<25} | {item['score']:<12.4f} |"
                     )
                 print("-" * 82)
 
-        # Chọn ra tuyến đường cuối cùng có tổng điểm cao nhất
-        best_final_candidate = max(paths.keys(), key=lambda k: paths[k][0])
-        _, best_sentence = paths[best_final_candidate]
+        # Chọn ra các tuyến đường cuối cùng có tổng điểm cao nhất
+        if paths:
+            # Lấy tất cả các giá trị (tổng_điểm, [lịch_sử_câu]) và sắp xếp theo điểm giảm dần
+            sorted_paths = sorted(
+                paths.values(), key=lambda item: item[0], reverse=True
+            )
 
-        return " ".join(best_sentence)
+            results = []
+            # Lấy ra tối đa top_k kết quả tốt nhất
+            for _, best_sentence, _ in sorted_paths[:top_k]:
+                results.append(" ".join(best_sentence))
 
-    """
-    # PIPELINE cũ
-    def correct_sentence(self, sentence: str, debug=False):
-        # Tách từ từ câu gốc
-        words: List[str] = sentence.lower().split()
-        corrected_words: List[str] = []
+            return results
 
-        for i, word in enumerate(words):
-            # 1. Nếu từ đã đúng (nằm trong từ điển) -> Giữ nguyên
-            if word in self.vocab:
-                corrected_words.append(word)
-                if debug:
-                    print(f"Bỏ qua: '{word}' (Đã có trong từ điển)")
-                continue
-
-            if debug:
-                print(f"\n[DEBUG] PHÁT HIỆN TỪ SAI: '{word}'")
-
-            prev_word: str | None = corrected_words[-1] if i > 0 else None
-
-            # 2. Nếu từ nghi ngờ sai -> Sinh candidates
-            candidates: List[str] = self.get_candidates(word, prev_word=prev_word)
-
-            # Nếu không tìm được candidate nào hao hao -> Đành giữ nguyên từ gốc
-            if not candidates:
-                corrected_words.append(word)
-                if debug:
-                    print(f"Không tìm thấy ứng viên nào cho '{word}'. Giữ nguyên.")
-                continue
-
-            if debug:
-                print(f"Ứng viên (Candidates): {candidates}")
-
-            best_candidate: str = word
-            max_score: float = -1
-
-            for cand in candidates:
-                score: float = self.calculate_score(cand, word, prev_word, debug=debug)
-
-                # Cập nhật ứng viên điểm cao nhất
-                if score > max_score:
-                    max_score: float = score
-                    best_candidate: str = cand
-
-            if debug:
-                print(
-                    f"CHỐT THAY THẾ: '{word}' ➔ '{best_candidate}' (Điểm cao nhất: {max_score:.2f})\n"
-                )
-            # 4. Chốt ứng viên tốt nhất vào câu
-            corrected_words.append(best_candidate)
-
-        # Ghép lại thành câu hoàn chỉnh
-        return " ".join(corrected_words)
-    """
+        return []

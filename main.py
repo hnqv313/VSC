@@ -56,8 +56,12 @@ def run_check(args):
             sys.exit(1)
 
     print(f"\n{COLOR_RED}Câu gốc: {incorrect_sentence}{COLOR_RESET}")
-    corrected_sentence = checker.correct_sentence(incorrect_sentence)
-    print(f"{COLOR_GREEN}Câu sửa: {corrected_sentence}{COLOR_RESET}\n")
+    corrected_sentences = checker.correct_sentence(incorrect_sentence, top_k=args.top_k)
+
+    print(f"{COLOR_GREEN}Các gợi ý sửa lỗi:{COLOR_RESET}")
+    for idx, sent in enumerate(corrected_sentences, 1):
+        print(f"{COLOR_GREEN}  {idx}. {sent}{COLOR_RESET}")
+    print("\n")
 
 
 def main():
@@ -79,7 +83,7 @@ def main():
     parser_train.add_argument(
         "--dict_path",
         type=str,
-        default=None,
+        default="wordlist.dic",
         help="Đường dẫn đến file từ điển ngoài (wordlist.dic)",
     )
     parser_train.add_argument(
@@ -101,6 +105,18 @@ def main():
         type=str,
         default="language_model.json",
         help="Đường dẫn đến file model",
+    )
+    parser_check.add_argument(
+        "--dict_path",
+        type=str,
+        default="wordlist.dic",
+        help="Đường dẫn đến file từ điển ngoài (wordlist.dic)",
+    )
+    parser_check.add_argument(
+        "--top_k",
+        type=int,
+        default=5,
+        help="Số lượng kết quả gợi ý trả về (Mặc định: 5)",
     )
 
     # Các cờ (flags) debug

@@ -6,11 +6,10 @@
 
 ## Setup
 
-### Clone repo
-
 ```fish
 git clone git@github.com:hnqv313/VSC.git
 cd VSC
+pip install -r requirements.txt
 ```
 
 ## Run
@@ -35,6 +34,7 @@ python main.py check --help
 
 ### Tuning
 
-Write custom code to evaluate the model. You can see the example in `tune.py`, run `python tune.py`.
+Write custom code to evaluate the model. You can see the example in `tune.py`,
+run `python tune.py`.
 
 For details on configuration and available hyperparameters, see `config.py`.

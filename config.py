@@ -3,15 +3,16 @@ from typing import Dict, List, TypedDict
 
 
 class ModelData(TypedDict):
-    vocab: List[str]
-    unigrams: Dict[str, int]
     bigrams: Dict[str, int]
+    unigrams: Dict[str, int]
+    vocab: List[str]
 
 
 @dataclass
 class SpellCheckerConfig:
     # 1. Cấu hình đường dẫn
     model_path: str = "language_model.json"
+    dict_path: str = "wordlist.dic"
 
     # 2. Cấu hình sinh ứng viên (Candidate Generation)
     # Quyết định có bao nhiêu từ lọt vào vòng chung kết tính điểm.
@@ -32,18 +33,22 @@ class SpellCheckerConfig:
 
     # 3. Trọng số chấm điểm (Scoring Weights)
     # Cân bằng quyền lực giữa Mặt chữ và Ngữ cảnh
-    sim_weight: int = 3
+    sim_weight: int = 10
     # Lũy thừa áp dụng cho điểm giống nhau về mặt chữ (Similarity Score).
     # - Nếu TĂNG (VD: 5): AI trở nên rất "Bảo thủ". Nó bắt buộc từ được chọn phải
     #   có mặt chữ cực kỳ giống với từ user gõ, dominate điểm ngữ cảnh.
     # - Nếu GIẢM (VD: 1): AI dễ dãi với mặt chữ, dễ bị dominate bởi điểm ngữ cảnh.
 
-    context_weight: int = 2
+    freq_weight: float = 1.0
+    # Nếu tăng lên (VD: 2.0), AI sẽ cực kỳ ưu tiên các từ phổ biến (Unigram).
+    # Nếu giảm xuống (VD: 0.1), AI sẽ coi nhẹ tần suất xuất hiện của từ đó.
+
+    context_weight: float = 1.0
     # Lũy thừa áp dụng cho điểm ngữ cảnh (Bigram / Tần suất đi kèm nhau).
-    # - Nếu TĂNG (VD: 4): AI trở thành "Thánh đoán ý". Nó sẵn sàng thay đổi hoàn toàn
+    # - Nếu TĂNG (VD: 2): AI trở thành "Thánh đoán ý". Nó sẵn sàng thay đổi hoàn toàn
     #   từ bạn gõ thành một từ khác hẳn (mặt chữ sai lệch nhiều) chỉ vì cụm từ đó
     #   rất phổ biến trong đời sống. (Dễ dẫn đến sửa thái quá - Overcorrection).
-    # - Nếu GIẢM (VD: 1): AI ngây ngô hơn, từ chối sửa thành cụm có nghĩa nếu mặt chữ khác xa.
+    # - Nếu GIẢM (VD: 0.1): AI ngây ngô hơn, từ chối sửa thành cụm có nghĩa nếu mặt chữ khác xa.
 
     # 4. Các hệ số nội bộ (Thuật toán Keyboard-Aware & DAMERAU-LEVENSHTEIN)
     # Mô phỏng hành vi trượt tay trên bàn phím của con người.
@@ -62,7 +67,7 @@ class SpellCheckerConfig:
     #   số hoặc ký tự lạ đó trong kết quả đầu ra.
 
     transposition_cost: float = 1.0  # Điểm phạt khi gõ đảo vị trí (Damerau)
-    # Phí phạt khi gõ gõ sai thứ tự 2 phím do tốc độ gõ nhanh (Lỗi Damerau).
+    # Phí phạt khi gõ sai thứ tự 2 phím do tốc độ gõ nhanh (Lỗi Damerau).
     # VD: Gõ "thiet" thành "htiet". Phí thay thế bình thường là 2.0 (sai 2 chữ).
     # - Nếu TĂNG (VD: 1.5): AI cho rằng lộn thứ tự là một lỗi khá nặng.
     # - Nếu GIẢM (VD: 0.5): AI cực kỳ thông cảm với lỗi gõ lộn xộn do tay nhanh hơn não.
@@ -75,3 +80,11 @@ class SpellCheckerConfig:
     #   giống nhau liên tiếp. Điểm ngữ cảnh sẽ bị ép về gần 0.
     # - Nếu TĂNG (VD: 1.0): Tắt hoàn toàn hình phạt này. Mô hình có thể sinh ra 2 từ
     #   trùng nhau nếu dữ liệu train (Corpus) vô tình có những cụm từ đó.
+
+    exact_match_bonus: float = 1.5
+    # Nếu từ user gõ giống 100% với một từ trong wordlist.dic, nhân hệ số.
+
+    auto_ambiguous_top_k: int = 20
+    # Tự động loại bỏ Top K từ phổ biến nhất khỏi danh sách được phép Neo
+
+    beam_width: int = 5  # Chỉ giữ lại x nhánh Viterbi tốt nhất mỗi bước

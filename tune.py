@@ -54,7 +54,7 @@ def main():
     print("\nĐang load model tinh chỉnh...")
     tuned_config = SpellCheckerConfig(
         sim_weight=1,  # Giảm trọng số mặt chữ
-        context_weight=4,  # Tăng trọng số ngữ cảnh
+        context_weight=4.0,  # Tăng trọng số ngữ cảnh
         cutoff=0.3,  # Hạ ngưỡng lọc để chấp nhận từ sai lệch nhiều hơn
     )
 
