@@ -1,5 +1,6 @@
 import json
 import math
+import unicodedata
 from typing import Dict, List, Set, Tuple
 
 import Levenshtein
@@ -283,61 +284,65 @@ class MLSpellChecker:
         prev_word: str | None,
         prev_prev_word: str | None = None,
     ) -> float:
+        candidate = unicodedata.normalize("NFC", candidate)
+        error_word = unicodedata.normalize("NFC", error_word)
+
         error_telex: str = to_standard_telex(error_word)
         cand_telex: str = to_standard_telex(candidate)
 
-        # sim_score: float = difflib.SequenceMatcher(
-        #     None, error_telex, cand_telex
-        # ).ratio()
         sim_norm: float = self.keyboard_aware_similarity(error_telex, cand_telex)
+        sim_feat = max(sim_norm, 1e-6)
 
         # Frequency Score (Dùng Add-1 Smoothing)
-        freq = self.unigrams.get(candidate, 1)
-        freq_norm: float = math.log2(freq + 1) / self.max_unigram_log
-
-        # Context Score (Bigram)
-        context_norm: float = 0.0
+        eps = 1e-10
+        context_prob: float = 0.0
         if prev_word:
-            context_norm = self.calculate_context_prob(
+            context_prob = self.calculate_context_prob(
                 prev_prev_word, prev_word, candidate
             )
 
-            # Stutter Penalty (Phạt nếu lặp từ)
+            # Phạt lặp từ (Stutter Penalty)
             if candidate == prev_word:
-                context_norm *= self.cfg.stutter_penalty
+                context_prob *= getattr(self.cfg, "stutter_penalty", 0.0)
+        else:
+            # Nếu đứng đầu câu, dùng Unigram probability
+            context_prob = self.unigrams.get(candidate, 1) / self.total_unigrams
 
-        # TÍNH TỔNG ĐIỂM BƯỚC NHẢY (Quy về thang 100)
+        context_feat = math.log(max(context_prob, eps))
+
+        freq_norm = self.unigrams.get(candidate, 1) / self.total_unigrams
+        freq_feat = math.log(max(freq_norm, eps))
+
+        # Dùng max(value, 1e-10) để tránh lỗi math.log(0)
+        log_sim = math.log(max(sim_norm, 1e-10))
+        log_ctx = math.log(max(context_prob, 1e-10))
+        log_freq = math.log(max(freq_norm, 1e-10))
+
+        # Lấy trọng số từ file config
         w_sim = getattr(self.cfg, "sim_weight", 0.0)
         w_freq = getattr(self.cfg, "freq_weight", 0.0)
         w_ctx = getattr(self.cfg, "context_weight", 0.0)
 
-        total_weight = w_sim + w_freq + w_ctx
+        # CÔNG THỨC LOG-LINEAR: Cộng các đặc trưng đã nhân trọng số
+        # Vì giá trị Log là số ÂM (ví dụ: log(0.01) = -4.6), nên step_score sẽ là một số ÂM.
+        # Giá trị càng TIẾN GẦN VỀ 0, ứng viên đó càng TỐT. Thuật toán Viterbi max() sẽ tự xử lý.
+        step_score = (w_sim * sim_feat) + (w_ctx * context_feat) + (w_freq * freq_feat)
 
-        # Dùng phép CỘNG có trọng số
-        step_score = (
-            ((sim_norm * w_sim) + (freq_norm * w_freq) + (context_norm * w_ctx))
-            / total_weight
-            * 100.0
-        )
-
-        # EXACT MATCH BONUS BẰNG TỪ ĐIỂN NGOÀI:
-        # Chỉ thưởng khi từ ứng viên giống 100% từ gõ vào VÀ từ đó phải là một từ có nghĩa trong wordlist.dic
-        if candidate == error_word and candidate in self.standard_dict:
-            step_score += getattr(self.cfg, "exact_match_bonus", 0.0) * 10.0
-            if self.debug and self.detail_log:
-                print(
-                    f"         TỪ CHUẨN TỪ ĐIỂN! Thưởng x{self.cfg.exact_match_bonus} điểm -> {step_score:.4f}"
-                )
+        # EXACT MATCH BONUS (Thưởng từ điển)
+        if candidate == error_word and candidate in getattr(
+            self, "standard_dict", set()
+        ):
+            step_score += getattr(self.cfg, "exact_match_bonus", 1.0)
 
         if self.debug and self.detail_log:
             prev_str = prev_word if prev_word else "[Đầu câu]"
             print(
-                f"      ➜ Xét bước nhảy: '{prev_str}' -> '{candidate}' (Gõ sai: '{error_word}', Telex: {cand_telex})"
+                f"      ➜ Xét bước nhảy: '{prev_str}' -> '{candidate}' (Gõ sai: '{error_word}')"
             )
-            print(f"         + Sim     = {sim_norm:.2f} * {w_sim}")
-            print(f"         + Freq    = {freq_norm:.2f} * {w_freq}")
-            print(f"         + Context = {context_norm:.2f} * {w_ctx}")
-            print(f"         = ĐIỂM BƯỚC NHẢY (Thang 100) = {step_score:.2f}")
+            print(f"         + Sim     : {log_sim:.4f} * {w_sim}")
+            print(f"         + Context : {log_ctx:.4f} * {w_ctx}")
+            print(f"         + Freq    : {log_freq:.4f} * {w_freq}")
+            print(f"         = TOTAL SCORE : {step_score:.4f}")
 
         return step_score
 
