@@ -100,7 +100,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset", type=str, default="tune_dataset.json")
     parser.add_argument("--space", type=str, default="search_space.json")
-    parser.add_argument("--model", type=str, default="language_model.json")
+    parser.add_argument("--model", type=str, default="models")
     parser.add_argument("--output", type=str, default="best_params.json")
     parser.add_argument(
         "--workers",

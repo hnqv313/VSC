@@ -2,20 +2,12 @@ import dataclasses
 import json
 import os
 from dataclasses import dataclass
-from typing import Dict, List, TypedDict
-
-
-class ModelData(TypedDict):
-    trigrams: Dict[str, int]
-    bigrams: Dict[str, int]
-    unigrams: Dict[str, int]
-    vocab: List[str]
 
 
 @dataclass
 class SpellCheckerConfig:
     # 1. Cấu hình đường dẫn
-    model_path: str = "language_model.json"
+    model_path: str = "models"
     dict_path: str = "wordlist.dic"
 
     # 2. Cấu hình sinh ứng viên (Candidate Generation)

@@ -26,7 +26,7 @@ def run_train(args):
 
     train_and_save_model(
         text_corpus=full_corpus,
-        output_filename=args.model_path,
+        output_dir=args.model_path,
         external_dict_path=args.dict_path,
     )
     print(f"{COLOR_GREEN}Huấn luyện hoàn tất!{COLOR_RESET}")
@@ -58,25 +58,28 @@ def run_check(args):
             detail_log=args.detail,
         )
 
-        incorrect_sentence: str = ""
-        if args.text:
-            incorrect_sentence: str = args.text
-        else:
-            try:
-                incorrect_sentence: str = input("Nhập văn bản: ")
-            except KeyboardInterrupt:
-                sys.exit(1)
+        while True:
+            incorrect_sentence: str = ""
+            if args.text:
+                incorrect_sentence: str = args.text
+                return
+            else:
+                try:
+                    incorrect_sentence: str = input("Nhập văn bản: ")
+                except KeyboardInterrupt:
+                    sys.exit(1)
 
-        print(f"\n{COLOR_RED}Câu gốc: {incorrect_sentence}{COLOR_RESET}")
-        corrected_sentences = checker.correct_sentence(
-            incorrect_sentence, top_k=args.top_k
-        )
+            print(f"\n{COLOR_RED}Câu gốc: {incorrect_sentence}{COLOR_RESET}")
+            corrected_sentences = checker.correct_sentence(
+                incorrect_sentence, top_k=args.top_k
+            )
 
-        print(f"{COLOR_GREEN}Các gợi ý sửa lỗi:{COLOR_RESET}")
-        for idx, sent in enumerate(corrected_sentences, 1):
-            print(f"{COLOR_GREEN}  {idx}. {sent}{COLOR_RESET}")
-        print("\n")
+            print(f"{COLOR_GREEN}Các gợi ý sửa lỗi:{COLOR_RESET}")
+            for idx, sent in enumerate(corrected_sentences, 1):
+                print(f"{COLOR_GREEN}  {idx}. {sent}{COLOR_RESET}")
+            print("\n")
     except Exception as e:
+        # raise e
         print(f"{COLOR_RED}Lỗi vận hành: {e}{COLOR_RESET}")
 
 
@@ -105,8 +108,8 @@ def main():
     parser_train.add_argument(
         "--model_path",
         type=str,
-        default="language_model.json",
-        help="Tên file model xuất ra (Mặc định: language_model.json)",
+        default="models",
+        help="Tên file model xuất ra (Mặc định: models)",
     )
 
     parser_check = subparsers.add_parser("check", help="Chạy sửa lỗi chính tả")
@@ -125,8 +128,8 @@ def main():
     parser_check.add_argument(
         "--model_path",
         type=str,
-        default="language_model.json",
-        help="Đường dẫn đến file model",
+        default="models",
+        help="Đường dẫn đến thư mục model",
     )
     parser_check.add_argument(
         "--dict_path",
@@ -138,7 +141,7 @@ def main():
         "--top_k",
         type=int,
         default=5,
-        help="Số lượng kết quả gợi ý trả về (Mặc định: 5)",
+        help="Số lượng kết quả gợi ý trả về trong giới hạn beam width (Mặc định: 5)",
     )
 
     # Các cờ (flags) debug

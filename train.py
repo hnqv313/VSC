@@ -5,7 +5,7 @@ import unicodedata
 from collections import Counter
 from typing import List, Set
 
-from config import ModelData
+import marisa_trie
 
 # 1. Toàn bộ nguyên âm Tiếng Việt
 VOWELS = "aeiouyàáãạảăắằẵặẳâấầẫậẩèéẽẹẻêếềễệểìíĩịỉòóõọỏôốồỗộổơớờỡợởùúũụủưứừữựửỳýỹỵỷ"
@@ -138,7 +138,7 @@ def extract_valid_sequences(raw_text: str) -> List[List[str]]:
 
 def train_and_save_model(
     text_corpus: str,
-    output_filename="language_model.json",
+    output_dir="models",
     external_dict_path: str | None = None,
 ) -> None:
     print("Training N-grams từ Corpus...")
@@ -188,35 +188,33 @@ def train_and_save_model(
         except FileNotFoundError:
             print(f"File not found: '{external_dict_path}'. Skip this step.")
 
-    # Sort theo tần suất giảm dần
-    sorted_unigrams = dict(
-        sorted(unigram_counts.items(), key=lambda x: x[1], reverse=True)
+    print("Building Marisa Tries...")
+    # Format "<I" (Unsigned Integer 32-bit): Đủ để chứa số lần xuất hiện lên tới 4.2 tỷ
+    unigram_trie = marisa_trie.RecordTrie(
+        "<I", [(k, (v,)) for k, v in unigram_counts.items()]
+    )
+    bigram_trie = marisa_trie.RecordTrie(
+        "<I", [(k, (v,)) for k, v in bigram_counts.items()]
+    )
+    trigram_trie = marisa_trie.RecordTrie(
+        "<I", [(k, (v,)) for k, v in trigram_counts.items()]
     )
 
-    sorted_bigrams = dict(
-        sorted(bigram_counts.items(), key=lambda x: x[1], reverse=True)
-    )
+    os.makedirs(output_dir, exist_ok=True)
 
-    sorted_trigrams = dict(
-        sorted(trigram_counts.items(), key=lambda x: x[1], reverse=True)
-    )
+    unigram_trie.save(os.path.join(output_dir, "unigrams.trie"))
+    bigram_trie.save(os.path.join(output_dir, "bigrams.trie"))
+    trigram_trie.save(os.path.join(output_dir, "trigrams.trie"))
 
-    # Vocab sort theo alphabet
-    sorted_vocab = sorted(vocab_set)
-
-    # Khởi tạo cấu trúc lưu model
-    model_data: ModelData = {
-        "trigrams": sorted_trigrams,
-        "bigrams": sorted_bigrams,
-        "unigrams": sorted_unigrams,
-        "vocab": sorted_vocab,
+    metadata = {
+        "vocab": sorted(vocab_set),
+        "total_unigrams": sum(unigram_counts.values()),
     }
 
-    print("Writing to JSON...")
-    with open(output_filename, "w", encoding="utf-8") as f:
-        json.dump(model_data, f, ensure_ascii=False, indent=4)
+    with open(os.path.join(output_dir, "model_meta.json"), "w", encoding="utf-8") as f:
+        json.dump(metadata, f, ensure_ascii=False, indent=4)
 
-    print(f"Done! File saved to: {output_filename}")
+    print(f"Done! Toàn bộ model đã được lưu tại: {output_dir}/")
 
 
 def load_corpus_from_folder(folder_path: str) -> str:

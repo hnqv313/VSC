@@ -1,9 +1,11 @@
 import json
 import math
+import os
 import unicodedata
 from typing import Dict, List, Set, Tuple
 
 import Levenshtein
+import marisa_trie
 
 from config import SpellCheckerConfig
 from layout import get_keyboard_coordinates, keyboard_matrix
@@ -21,16 +23,30 @@ class MLSpellChecker:
         self.debug = debug
         self.detail_log = detail_log
 
-        print("Loading model...")
-        with open(self.cfg.model_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+        print(f"Loading model từ thư mục: {self.cfg.model_path}...")
 
-        self.vocab: Set[str] = set(data["vocab"])
-        self.unigrams: Dict[str, int] = data["unigrams"]
-        self.bigrams: Dict[str, int] = data["bigrams"]
-        self.trigrams: Dict[str, int] = data.get("trigrams", {})
+        # Load Metadata
+        meta_path = os.path.join(self.cfg.model_path, "model_meta.json")
+        with open(meta_path, "r", encoding="utf-8") as f:
+            meta = json.load(f)
 
-        self.total_unigrams = sum(self.unigrams.values())
+        self.vocab: Set[str] = set(
+            unicodedata.normalize("NFC", w) for w in meta["vocab"]
+        )
+        self.total_unigrams = meta["total_unigrams"]
+
+        self.unigrams = marisa_trie.RecordTrie("<I").mmap(
+            os.path.join(self.cfg.model_path, "unigrams.trie")
+        )
+        self.bigrams = marisa_trie.RecordTrie("<I").mmap(
+            os.path.join(self.cfg.model_path, "bigrams.trie")
+        )
+
+        tri_path = os.path.join(self.cfg.model_path, "trigrams.trie")
+        if os.path.exists(tri_path):
+            self.trigrams = marisa_trie.RecordTrie("<I").mmap(tri_path)
+        else:
+            self.trigrams = None
 
         self.telex_to_vocab: Dict[str, List[str]] = {}
         for w in self.vocab:
@@ -72,11 +88,20 @@ class MLSpellChecker:
         print(f"Done! The dictionary has {len(self.vocab)} words.")
 
         # Tìm Log của từ xuất hiện nhiều nhất để chuẩn hóa Tần suất về 0.0 -> 1.0
-        self.max_unigram_log = (
-            math.log2(max(self.unigrams.values()) + 1) if self.unigrams else 1.0
-        )
+        max_count = 1
+        for _, v in self.unigrams.items():
+            if v[0] > max_count:
+                max_count = v[0]
+        self.max_unigram_log = math.log2(max_count + 1)
 
         self._sim_cache: Dict[Tuple[str, str], float] = {}
+
+    def get_trie_count(self, trie, key: str) -> int:
+        """Hàm lấy tần suất từ RecordTrie một cách an toàn"""
+        normalized_key = unicodedata.normalize("NFC", key)
+        res = trie.get(normalized_key)
+        # res sẽ là một list, ví dụ: [(495,)]. Nếu không có key, nó trả về list rỗng []
+        return res[0][0] if res else 0
 
     # MÀNG LỌC ĐỘ DÀI (Tránh rác & Tăng tốc difflib)
     def is_valid_length(self, cand_telex: str, error_len: int) -> bool:
@@ -114,10 +139,9 @@ class MLSpellChecker:
 
         # Lọc từ Bigram (Những từ từng đi liền sau prev_word)
         if prev_word:
+            prefix = f"{prev_word} "
             context_words: List[str] = [
-                key.split()[1]
-                for key in self.bigrams.keys()
-                if key.startswith(f"{prev_word} ")
+                key[len(prefix) :] for key in self.bigrams.keys(prefix)
             ]
 
             if context_words:
@@ -147,6 +171,7 @@ class MLSpellChecker:
                 # Ánh xạ ngược từ Telex về chữ Tiếng Việt thật
                 for ctm in context_telex_matches:
                     for real_word in context_telex_to_word[ctm]:
+                        real_word = unicodedata.normalize("NFC", real_word)
                         if real_word not in candidates:
                             candidates.append(real_word)
 
@@ -165,6 +190,7 @@ class MLSpellChecker:
             )
             for gtm in general_telex_matches:
                 for real_word in self.telex_to_vocab[gtm]:
+                    real_word = unicodedata.normalize("NFC", real_word)
                     if real_word not in candidates:
                         candidates.append(real_word)
 
@@ -230,7 +256,7 @@ class MLSpellChecker:
 
         # Đổi từ 'Khoảng cách' (0.0 -> max_len) sang 'Độ giống nhau' (0.0 -> 1.0)
         distance = dp[m][n]
-        sim = 1.0 - (distance / max_len)
+        sim = math.exp(-distance / max_len)
         final_sim = max(0.0, sim)
 
         self._sim_cache[cache_key] = final_sim  # Lưu cache
@@ -244,20 +270,24 @@ class MLSpellChecker:
         # 1. Tính xác suất Trigram P(w3 | w1, w2)
         p_tri = 0.0
         if w1:
-            bigram_w1_w2_count = self.bigrams.get(f"{w1} {w2}", 0)
-            trigram_count = self.trigrams.get(f"{w1} {w2} {w3}", 0)
+            bigram_w1_w2_count = self.get_trie_count(self.bigrams, f"{w1} {w2}")
+            trigram_count = (
+                self.get_trie_count(self.trigrams, f"{w1} {w2} {w3}")
+                if self.trigrams
+                else 0
+            )
             p_tri = (
                 trigram_count / bigram_w1_w2_count if bigram_w1_w2_count > 0 else 0.0
             )
 
         # 2. Tính xác suất Bigram P(w3 | w2)
-        unigram_w2_count = self.unigrams.get(w2, 0)
-        bigram_w2_w3_count = self.bigrams.get(f"{w2} {w3}", 0)
+        unigram_w2_count = self.get_trie_count(self.unigrams, w2)
+        bigram_w2_w3_count = self.get_trie_count(self.bigrams, f"{w2} {w3}")
         p_bi = bigram_w2_w3_count / unigram_w2_count if unigram_w2_count > 0 else 0.0
 
         # 3. Tính xác suất Unigram P(w3)
         p_uni = (
-            self.unigrams.get(w3, 0) / self.total_unigrams
+            self.get_trie_count(self.unigrams, w3) / self.total_unigrams
             if self.total_unigrams > 0
             else 0.0
         )
@@ -284,67 +314,61 @@ class MLSpellChecker:
         prev_word: str | None,
         prev_prev_word: str | None = None,
     ) -> float:
+        # Normalize
         candidate = unicodedata.normalize("NFC", candidate)
         error_word = unicodedata.normalize("NFC", error_word)
 
-        error_telex: str = to_standard_telex(error_word)
-        cand_telex: str = to_standard_telex(candidate)
+        cand_telex = to_standard_telex(candidate)
+        err_telex = to_standard_telex(error_word)
 
-        sim_norm: float = self.keyboard_aware_similarity(error_telex, cand_telex)
-        sim_feat = max(sim_norm, 1e-6)
+        eps = 1e-8
 
-        # Frequency Score (Dùng Add-1 Smoothing)
-        eps = 1e-10
-        context_prob: float = 0.0
+        # Similarity
+        sim = self.keyboard_aware_similarity(err_telex, cand_telex)
+        sim_feat = math.log(sim + 1e-8)
+
+        # Unigram
+        count = self.get_trie_count(self.unigrams, candidate)
+        p_uni = count / self.total_unigrams if self.total_unigrams > 0 else 0.0
+
+        # Context (LM)
         if prev_word:
-            context_prob = self.calculate_context_prob(
-                prev_prev_word, prev_word, candidate
-            )
+            p_ctx = self.calculate_context_prob(prev_prev_word, prev_word, candidate)
 
-            # Phạt lặp từ (Stutter Penalty)
+            # Stutter penalty
             if candidate == prev_word:
-                context_prob *= getattr(self.cfg, "stutter_penalty", 0.0)
+                p_ctx *= getattr(self.cfg, "stutter_penalty", 0.0)
         else:
-            # Nếu đứng đầu câu, dùng Unigram probability
-            context_prob = self.unigrams.get(candidate, 1) / self.total_unigrams
+            # đầu câu → fallback unigram
+            p_ctx = max(p_uni, eps)
 
-        context_feat = math.log(max(context_prob, eps))
+        ctx_feat = math.log(p_ctx + eps)
+        ctx_feat = (ctx_feat + 10) / 10
 
-        freq_norm = self.unigrams.get(candidate, 1) / self.total_unigrams
-        freq_feat = math.log(max(freq_norm, eps))
-
-        # Dùng max(value, 1e-10) để tránh lỗi math.log(0)
-        log_sim = math.log(max(sim_norm, 1e-10))
-        log_ctx = math.log(max(context_prob, 1e-10))
-        log_freq = math.log(max(freq_norm, 1e-10))
-
-        # Lấy trọng số từ file config
+        # Weights
         w_sim = getattr(self.cfg, "sim_weight", 0.0)
-        w_freq = getattr(self.cfg, "freq_weight", 0.0)
         w_ctx = getattr(self.cfg, "context_weight", 0.0)
 
-        # CÔNG THỨC LOG-LINEAR: Cộng các đặc trưng đã nhân trọng số
-        # Vì giá trị Log là số ÂM (ví dụ: log(0.01) = -4.6), nên step_score sẽ là một số ÂM.
-        # Giá trị càng TIẾN GẦN VỀ 0, ứng viên đó càng TỐT. Thuật toán Viterbi max() sẽ tự xử lý.
-        step_score = (w_sim * sim_feat) + (w_ctx * context_feat) + (w_freq * freq_feat)
+        # Final score (log-linear)
+        score = (w_sim * sim_feat) + (w_ctx * ctx_feat)
 
-        # EXACT MATCH BONUS (Thưởng từ điển)
+        # Exact match bonus
         if candidate == error_word and candidate in getattr(
             self, "standard_dict", set()
         ):
-            step_score += getattr(self.cfg, "exact_match_bonus", 1.0)
+            score += getattr(self.cfg, "exact_match_bonus", 1.0)
 
+        # Debug
         if self.debug and self.detail_log:
-            prev_str = prev_word if prev_word else "[Đầu câu]"
-            print(
-                f"      ➜ Xét bước nhảy: '{prev_str}' -> '{candidate}' (Gõ sai: '{error_word}')"
-            )
-            print(f"         + Sim     : {log_sim:.4f} * {w_sim}")
-            print(f"         + Context : {log_ctx:.4f} * {w_ctx}")
-            print(f"         + Freq    : {log_freq:.4f} * {w_freq}")
-            print(f"         = TOTAL SCORE : {step_score:.4f}")
+            prev_str = prev_word if prev_word else "[START]"
+            print("ERROR:", err_telex)
+            print("CAND :", cand_telex)
+            print(f"      ➜ '{prev_str}' -> '{candidate}' (error: '{error_word}')")
+            print(f"         sim : {sim_feat:.4f} * {w_sim}")
+            print(f"         ctx : {ctx_feat:.4f} * {w_ctx}")
+            print(f"         => SCORE: {score:.4f}")
 
-        return step_score
+        return score
 
     def is_delayed_anchor(self, w: str, next_w: str | None) -> bool:
         if not hasattr(self, "standard_dict") or w not in self.standard_dict:
