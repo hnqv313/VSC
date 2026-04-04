@@ -145,6 +145,7 @@ def train_and_save_model(
 
     unigram_counts: Counter[str] = Counter()
     bigram_counts: Counter[str] = Counter()
+    trigram_counts: Counter[str] = Counter()
     vocab_set: Set[str] = set()
 
     print("Đang tách câu và phân tích ngữ cảnh...")
@@ -152,15 +153,22 @@ def train_and_save_model(
     valid_sequences = extract_valid_sequences(text_corpus)
 
     for seq in valid_sequences:
+        len_seq: int = len(seq)
+
         # 1. Đếm Unigram và cập nhật Vocab
         unigram_counts.update(seq)
         vocab_set.update(seq)
 
         # 2. Đếm Bigram
         # Chắc chắn 100% các từ trong seq đứng sát nhau và không bị chặn bởi dấu câu nào
-        if len(seq) >= 2:
+        if len_seq >= 2:
             bigrams = zip(seq, seq[1:])
             bigram_counts.update([f"{w1} {w2}" for w1, w2 in bigrams])
+
+        # 3. Đếm Trigram
+        if len_seq >= 3:
+            trigrams = zip(seq, seq[1:], seq[2:])
+            trigram_counts.update([f"{w1} {w2} {w3}" for w1, w2, w3 in trigrams])
 
     print(f"-> Vocab từ Corpus: {len(vocab_set)} từ.")
 
@@ -189,11 +197,16 @@ def train_and_save_model(
         sorted(bigram_counts.items(), key=lambda x: x[1], reverse=True)
     )
 
+    sorted_trigrams = dict(
+        sorted(trigram_counts.items(), key=lambda x: x[1], reverse=True)
+    )
+
     # Vocab sort theo alphabet
     sorted_vocab = sorted(vocab_set)
 
     # Khởi tạo cấu trúc lưu model
     model_data: ModelData = {
+        "trigrams": sorted_trigrams,
         "bigrams": sorted_bigrams,
         "unigrams": sorted_unigrams,
         "vocab": sorted_vocab,

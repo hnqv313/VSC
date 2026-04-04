@@ -27,6 +27,9 @@ class MLSpellChecker:
         self.vocab: Set[str] = set(data["vocab"])
         self.unigrams: Dict[str, int] = data["unigrams"]
         self.bigrams: Dict[str, int] = data["bigrams"]
+        self.trigrams: Dict[str, int] = data.get("trigrams", {})
+
+        self.total_unigrams = sum(self.unigrams.values())
 
         self.telex_to_vocab: Dict[str, List[str]] = {}
         for w in self.vocab:
@@ -71,6 +74,8 @@ class MLSpellChecker:
         self.max_unigram_log = (
             math.log2(max(self.unigrams.values()) + 1) if self.unigrams else 1.0
         )
+
+        self._sim_cache: Dict[Tuple[str, str], float] = {}
 
     # MÀNG LỌC ĐỘ DÀI (Tránh rác & Tăng tốc difflib)
     def is_valid_length(self, cand_telex: str, error_len: int) -> bool:
@@ -183,6 +188,11 @@ class MLSpellChecker:
     def keyboard_aware_similarity(self, word1: str, word2: str) -> float:
         # Thuật toán Damerau-Levenshtein kết hợp Khoảng cách bàn phím
 
+        # BỘ NHỚ ĐỆM (CACHE): Bỏ qua tính toán nếu đã từng tính cặp từ này
+        cache_key = (word1, word2)
+        if cache_key in self._sim_cache:
+            return self._sim_cache[cache_key]
+
         m, n = len(word1), len(word2)
         dp = [[0.0] * (n + 1) for _ in range(m + 1)]
 
@@ -220,12 +230,58 @@ class MLSpellChecker:
         # Đổi từ 'Khoảng cách' (0.0 -> max_len) sang 'Độ giống nhau' (0.0 -> 1.0)
         distance = dp[m][n]
         sim = 1.0 - (distance / max_len)
+        final_sim = max(0.0, sim)
 
-        return max(0.0, sim)
+        self._sim_cache[cache_key] = final_sim  # Lưu cache
+        return max(0.0, final_sim)
+
+    def calculate_context_prob(self, w1: str | None, w2: str, w3: str) -> float:
+        """
+        Nội suy xác suất kết hợp Trigram, Bigram và Unigram.
+        Trả về xác suất chuẩn hóa 0.0 -> 1.0.
+        """
+        # 1. Tính xác suất Trigram P(w3 | w1, w2)
+        p_tri = 0.0
+        if w1:
+            bigram_w1_w2_count = self.bigrams.get(f"{w1} {w2}", 0)
+            trigram_count = self.trigrams.get(f"{w1} {w2} {w3}", 0)
+            p_tri = (
+                trigram_count / bigram_w1_w2_count if bigram_w1_w2_count > 0 else 0.0
+            )
+
+        # 2. Tính xác suất Bigram P(w3 | w2)
+        unigram_w2_count = self.unigrams.get(w2, 0)
+        bigram_w2_w3_count = self.bigrams.get(f"{w2} {w3}", 0)
+        p_bi = bigram_w2_w3_count / unigram_w2_count if unigram_w2_count > 0 else 0.0
+
+        # 3. Tính xác suất Unigram P(w3)
+        p_uni = (
+            self.unigrams.get(w3, 0) / self.total_unigrams
+            if self.total_unigrams > 0
+            else 0.0
+        )
+
+        # Trọng số lấy từ cấu hình
+        l3 = getattr(self.cfg, "lambda_3", 0.0)
+        l2 = getattr(self.cfg, "lambda_2", 0.0)
+        l1 = getattr(self.cfg, "lambda_1", 0.0)
+
+        # Nếu chưa đủ 2 từ để có Trigram (vd: mới đến từ thứ 2 trong câu)
+        # Ta chia lại tỷ lệ quyền lực cho Bigram và Unigram
+        if not w1:
+            total_l = l2 + l1
+            return (l2 * p_bi + l1 * p_uni) / total_l if total_l > 0 else 0.0
+
+        # Nội suy chuẩn
+        return (l3 * p_tri) + (l2 * p_bi) + (l1 * p_uni)
 
     # TÍNH ĐIỂM
     def calculate_score(
-        self, candidate: str, error_word: str, prev_word: str | None
+        self,
+        candidate: str,
+        error_word: str,
+        prev_word: str | None,
+        prev_prev_word: str | None = None,
     ) -> float:
         error_telex: str = to_standard_telex(error_word)
         cand_telex: str = to_standard_telex(candidate)
@@ -242,11 +298,9 @@ class MLSpellChecker:
         # Context Score (Bigram)
         context_norm: float = 0.0
         if prev_word:
-            bigram_key = f"{prev_word} {candidate}"
-            bg_count = self.bigrams.get(bigram_key, 0)
-            prev_count = self.unigrams.get(prev_word, 1)
-
-            context_norm = min(bg_count / prev_count, 1.0)
+            context_norm = self.calculate_context_prob(
+                prev_prev_word, prev_word, candidate
+            )
 
             # Stutter Penalty (Phạt nếu lặp từ)
             if candidate == prev_word:
@@ -367,7 +421,10 @@ class MLSpellChecker:
                 if reset_context_next_step or not paths:
                     # Truyền prev_word = None
                     step_score = self.calculate_score(
-                        curr_cand, current_word, prev_word=None
+                        curr_cand,
+                        current_word,
+                        prev_word=None,
+                        prev_prev_word=None,
                     )
 
                     # Nếu đang ở giữa câu mà bị reset, ta phải nhặt lại lịch sử đường đi tốt nhất trước đó
@@ -397,9 +454,13 @@ class MLSpellChecker:
                 else:
                     # Thử nối curr_cand vào tất cả các nhánh (prev_cand) của bước trước
                     for path_key, (prev_score, prev_path, prev_cand) in paths.items():
-                        # Điểm bước nhảy (Bigram Context + Similarity + Frequency)
+                        # RÚT TỪ TRƯỚC NỮA TỪ TRONG LỊCH SỬ ĐƯỜNG ĐI
+                        # prev_path có dạng: ['hôm', 'nay', 'đi'] -> [-1] là 'đi', [-2] là 'nay'
+                        prev_prev_cand = prev_path[-2] if len(prev_path) >= 2 else None
+
+                        # Gọi tính điểm với Trigram Context
                         step_score = self.calculate_score(
-                            curr_cand, current_word, prev_cand
+                            curr_cand, current_word, prev_cand, prev_prev_cand
                         )
 
                         # ĐIỂM TÍCH LŨY = Điểm lịch sử + Điểm bước nhảy
@@ -415,7 +476,7 @@ class MLSpellChecker:
                                 {
                                     "cand": curr_cand,
                                     "path": f"{prev_cand} -> {curr_cand}",
-                                    "calc_str": f"({prev_score:.4f} * {step_score:.4f})",
+                                    "calc_str": f"({prev_score:.4f} + {step_score:.4f})",
                                     "score": total_score,
                                 }
                             )

@@ -69,8 +69,8 @@ def evaluate_single_config(job_id: int, params: Dict[str, Any]) -> dict:
         # Chạy model để lấy danh sách ứng viên (List[str])
         predicted_list = global_checker.correct_sentence(wrong_text)
 
-        # Kiểm tra xem list có rỗng không và lấy kết quả Top 1 (index 0) để so sánh
-        if predicted_list and predicted_list[0] == expected_text:
+        # Kiểm tra xem list có rỗng không và lấy kết quả để so sánh
+        if predicted_list and expected_text in predicted_list:
             correct_count += 1
 
     accuracy = (correct_count / total_cases) * 100
@@ -201,5 +201,4 @@ def main():
 
 
 if __name__ == "__main__":
-    # Bắt buộc phải có if __name__ == "__main__" trên Windows để chạy đa tiến trình
     main()

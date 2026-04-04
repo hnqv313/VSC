@@ -6,6 +6,7 @@ from typing import Dict, List, TypedDict
 
 
 class ModelData(TypedDict):
+    trigrams: Dict[str, int]
     bigrams: Dict[str, int]
     unigrams: Dict[str, int]
     vocab: List[str]
@@ -91,6 +92,11 @@ class SpellCheckerConfig:
     # Tự động loại bỏ Top K từ phổ biến nhất khỏi danh sách được phép Neo
 
     beam_width: int = 5  # Chỉ giữ lại x nhánh Viterbi tốt nhất mỗi bước
+
+    # Trọng số cho N-grams
+    lambda_3: float = 0.6  # Trọng số cho Trigram
+    lambda_2: float = 0.3  # Trọng số cho Bigram
+    lambda_1: float = 0.1  # Trọng số cho Unigram
 
     @classmethod
     def from_json(cls, json_path: str) -> "SpellCheckerConfig":
