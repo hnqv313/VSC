@@ -59,7 +59,7 @@ def evaluate_single_config(job_id: int, params: Dict[str, Any]) -> dict:
             setattr(global_checker.cfg, key, value)
 
     # 2. Chạy đánh giá
-    correct_count = 0
+    total_score = 0.0
     total_cases = len(global_test_cases)
 
     for case in global_test_cases:
@@ -70,15 +70,19 @@ def evaluate_single_config(job_id: int, params: Dict[str, Any]) -> dict:
         predicted_list = global_checker.correct_sentence(wrong_text)
 
         # Kiểm tra xem list có rỗng không và lấy kết quả để so sánh
-        if predicted_list and expected_text in predicted_list:
-            correct_count += 1
+        if predicted_list:
+            for i, pred in enumerate(predicted_list):
+                if pred == expected_text:
+                    total_score += 1.0 / (i + 1)
+                    # print(expected_text, predicted_list)
+                    break
 
-    accuracy = (correct_count / total_cases) * 100
+    accuracy = (total_score / total_cases) * 100
 
     return {
         "job_id": job_id,
         "accuracy": accuracy,
-        "correct": correct_count,
+        "score": total_score,
         "params": params,
     }
 
@@ -94,6 +98,15 @@ def generate_grid(search_space: Dict[str, List[Any]]) -> List[Dict[str, Any]]:
     combinations = list(itertools.product(*values))
 
     return [dict(zip(keys, combo)) for combo in combinations]
+
+
+def is_better_params(p1, p2):
+    """
+    Rule: ưu tiên config đơn giản hơn (tổng giá trị nhỏ hơn)
+    """
+    if not p2:
+        return True
+    return sum(p1.values()) < sum(p2.values())
 
 
 def main():
@@ -176,7 +189,10 @@ def main():
             )
 
             # Cập nhật mốc best
-            if result["accuracy"] > best_accuracy:
+            if result["accuracy"] > best_accuracy or (
+                result["accuracy"] == best_accuracy
+                and is_better_params(result["params"], best_params)
+            ):
                 best_accuracy = result["accuracy"]
                 best_params = result["params"]
 

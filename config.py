@@ -12,7 +12,7 @@ class SpellCheckerConfig:
 
     # 2. Cấu hình sinh ứng viên (Candidate Generation)
     # Quyết định có bao nhiêu từ lọt vào vòng chung kết tính điểm.
-    top_n: int = 20
+    top_n: int = 25
     # Số lượng từ ứng viên tối đa được rút ra từ từ điển cho mỗi từ gõ sai.
     # - Nếu TĂNG (VD: 50): Trễ (latency) cao hơn, chạy chậm hơn. Đổi lại, tăng cơ hội
     #   tìm thấy từ đúng ngay cả khi user gõ sai nhiều (sai cả cụm dài).

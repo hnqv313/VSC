@@ -30,9 +30,9 @@ class MLSpellChecker:
         with open(meta_path, "r", encoding="utf-8") as f:
             meta = json.load(f)
 
-        self.vocab: Set[str] = set(
-            unicodedata.normalize("NFC", w) for w in meta["vocab"]
-        )
+        vocab_list = [unicodedata.normalize("NFC", w) for w in meta["vocab"]]
+
+        self.vocab: Set[str] = set(vocab_list)
         self.total_unigrams = meta["total_unigrams"]
 
         self.unigrams = marisa_trie.RecordTrie("<I").mmap(
@@ -49,7 +49,7 @@ class MLSpellChecker:
             self.trigrams = None
 
         self.telex_to_vocab: Dict[str, List[str]] = {}
-        for w in self.vocab:
+        for w in vocab_list:
             t = to_standard_telex(w)
             if t not in self.telex_to_vocab:
                 self.telex_to_vocab[t] = []
