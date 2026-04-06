@@ -2,11 +2,12 @@ import json
 import math
 import os
 import unicodedata
+from collections import defaultdict
 from functools import lru_cache
 from typing import Dict, List, Set, Tuple
 
-import Levenshtein
 import marisa_trie
+from rapidfuzz import fuzz, process
 
 from config import SpellCheckerConfig
 from layout import get_keyboard_coordinates, keyboard_matrix
@@ -33,7 +34,7 @@ class MLSpellChecker:
 
         vocab_list = [unicodedata.normalize("NFC", w) for w in meta["vocab"]]
 
-        self.vocab: Set[str] = set(vocab_list)
+        vocab: Set[str] = set(vocab_list)
         self.total_unigrams = meta["total_unigrams"]
 
         self.unigrams = marisa_trie.RecordTrie("<I").mmap(
@@ -56,7 +57,10 @@ class MLSpellChecker:
                 self.telex_to_vocab[t] = []
             self.telex_to_vocab[t].append(w)
 
-        self.telex_vocab_list: List[str] = list(self.telex_to_vocab.keys())
+        telex_vocab_list: List[str] = list(self.telex_to_vocab.keys())
+        self.telex_by_length = defaultdict(list)
+        for t in telex_vocab_list:
+            self.telex_by_length[len(t)].append(t)
 
         self.standard_dict: Set[str] = set()
         if self.cfg.dict_path:
@@ -86,14 +90,7 @@ class MLSpellChecker:
             )
 
         self.kb_coords = get_keyboard_coordinates(keyboard_matrix=keyboard_matrix)
-        print(f"Done! The dictionary has {len(self.vocab)} words.")
-
-        # Tìm Log của từ xuất hiện nhiều nhất để chuẩn hóa Tần suất về 0.0 -> 1.0
-        max_count = 1
-        for _, v in self.unigrams.items():
-            if v[0] > max_count:
-                max_count = v[0]
-        self.max_unigram_log = math.log2(max_count + 1)
+        print(f"Done! The dictionary has {len(vocab)} words.")
 
     def get_trie_count(self, trie, key: str) -> int:
         """Hàm lấy tần suất từ RecordTrie một cách an toàn"""
@@ -116,15 +113,12 @@ class MLSpellChecker:
     def get_fast_close_matches(
         self, target: str, possibilities: List[str], n: int, cutoff: float
     ) -> List[str]:
-        results = []
-        for p in possibilities:
-            sim = self.cached_levenshtein_ratio(target, p)
-            if sim >= cutoff:
-                results.append((p, sim))
+        results = process.extract(
+            target, possibilities, scorer=fuzz.ratio, limit=n, score_cutoff=cutoff * 100
+        )
 
-        # Sắp xếp theo độ giống nhau giảm dần
-        results.sort(key=lambda x: x[1], reverse=True)
-        return [r[0] for r in results[:n]]
+        # Kết quả trả về dạng: [('word1', 95.0, index), ('word2', 80.0, index)]
+        return [r[0] for r in results]
 
     # SINH CANDIDATE
     def get_candidates(
@@ -176,9 +170,17 @@ class MLSpellChecker:
 
         # Bổ sung từ Unigram nếu chưa đủ số lượng top_n
         if len(candidates) < self.cfg.top_n:
-            filtered_global_telex = [
-                t for t in self.telex_vocab_list if self.is_valid_length(t, error_len)
-            ]
+            filtered_global_telex = []
+            # Logic cũ của is_valid_length: chênh lệch <= 3, và nếu error >= 3 thì cand >= 3
+            min_len = 3 if error_len >= 3 else max(1, error_len - 3)
+            max_len = error_len + 3
+
+            # Đảm bảo min_len không âm
+            min_len = max(min_len, error_len - 3)
+
+            for length in range(min_len, max_len + 1):
+                if length in self.telex_by_length:
+                    filtered_global_telex.extend(self.telex_by_length[length])
 
             # Tìm trên toàn bộ từ điển TELEX
             general_telex_matches: List[str] = self.get_fast_close_matches(
@@ -377,10 +379,6 @@ class MLSpellChecker:
             return True
         return False
 
-    @lru_cache(maxsize=200000)
-    def cached_levenshtein_ratio(self, s1: str, s2: str):
-        return Levenshtein.ratio(s1, s2)
-
     # VITERBI DECODING (Sửa lỗi theo ngữ cảnh toàn câu)
     def correct_sentence(self, sentence: str, top_k: int = 5) -> List[str]:
         words: List[str] = sentence.lower().split()
@@ -427,18 +425,21 @@ class MLSpellChecker:
 
                 # BỎ CUỘC
                 if candidates:
-                    best_sim = max(
-                        [
-                            self.cached_levenshtein_ratio(current_word, c)
-                            for c in candidates
-                        ]
+                    # Truyền sẵn score_cutoff (thang điểm 0-100 của RapidFuzz)
+                    best_match = process.extractOne(
+                        current_word,
+                        candidates,
+                        scorer=fuzz.ratio,
+                        score_cutoff=self.cfg.cutoff * 100,
                     )
-                    if best_sim < self.cfg.cutoff:
+
+                    # Nếu best_match là None, nghĩa là KHÔNG CÓ từ nào đạt ngưỡng cutoff
+                    if best_match is None:
                         candidates = [current_word]
                         is_garbage = True
                         if self.debug:
                             print(
-                                f"  ➜ Bỏ cuộc: Rác/Từ lạ (Max Sim {best_sim:.2f} < {self.cfg.cutoff})."
+                                f"  ➜ Bỏ cuộc: Rác/Từ lạ (Không có từ nào >= {self.cfg.cutoff})."
                             )
                 else:
                     candidates = [current_word]
