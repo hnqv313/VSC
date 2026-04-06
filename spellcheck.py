@@ -2,6 +2,7 @@ import json
 import math
 import os
 import unicodedata
+from functools import lru_cache
 from typing import Dict, List, Set, Tuple
 
 import Levenshtein
@@ -94,8 +95,6 @@ class MLSpellChecker:
                 max_count = v[0]
         self.max_unigram_log = math.log2(max_count + 1)
 
-        self._sim_cache: Dict[Tuple[str, str], float] = {}
-
     def get_trie_count(self, trie, key: str) -> int:
         """Hàm lấy tần suất từ RecordTrie một cách an toàn"""
         normalized_key = unicodedata.normalize("NFC", key)
@@ -119,7 +118,7 @@ class MLSpellChecker:
     ) -> List[str]:
         results = []
         for p in possibilities:
-            sim = Levenshtein.ratio(target, p)
+            sim = self.cached_levenshtein_ratio(target, p)
             if sim >= cutoff:
                 results.append((p, sim))
 
@@ -212,13 +211,9 @@ class MLSpellChecker:
         # Chuẩn hóa khoảng cách.
         return min(dist / self.cfg.max_kb_distance, 1.0)
 
+    @lru_cache(maxsize=100000)
     def keyboard_aware_similarity(self, word1: str, word2: str) -> float:
         # Thuật toán Damerau-Levenshtein kết hợp Khoảng cách bàn phím
-
-        # BỘ NHỚ ĐỆM (CACHE): Bỏ qua tính toán nếu đã từng tính cặp từ này
-        cache_key = (word1, word2)
-        if cache_key in self._sim_cache:
-            return self._sim_cache[cache_key]
 
         m, n = len(word1), len(word2)
         dp = [[0.0] * (n + 1) for _ in range(m + 1)]
@@ -259,7 +254,6 @@ class MLSpellChecker:
         sim = math.exp(-distance / max_len)
         final_sim = max(0.0, sim)
 
-        self._sim_cache[cache_key] = final_sim  # Lưu cache
         return max(0.0, final_sim)
 
     def calculate_context_prob(self, w1: str | None, w2: str, w3: str) -> float:
@@ -383,6 +377,10 @@ class MLSpellChecker:
             return True
         return False
 
+    @lru_cache(maxsize=200000)
+    def cached_levenshtein_ratio(self, s1: str, s2: str):
+        return Levenshtein.ratio(s1, s2)
+
     # VITERBI DECODING (Sửa lỗi theo ngữ cảnh toàn câu)
     def correct_sentence(self, sentence: str, top_k: int = 5) -> List[str]:
         words: List[str] = sentence.lower().split()
@@ -414,23 +412,26 @@ class MLSpellChecker:
                 if self.debug:
                     print(f"  ➜ Đã Neo cứng (Delayed Anchor Passed): '{current_word}'")
             else:
-                candidates_set = set()
+                candidates_set = {}
                 if not reset_context_next_step and paths:
                     # Lấy từ cuối cùng của nhánh từ index 2 của Tuple
                     for _, _, prev_cand in paths.values():
-                        candidates_set.update(
-                            self.get_candidates(current_word, prev_word=prev_cand)
-                        )
+                        for c in self.get_candidates(current_word, prev_word=prev_cand):
+                            candidates_set[c] = None
 
-                candidates_set.update(self.get_candidates(current_word, prev_word=None))
-                candidates = list(candidates_set)
+                for c in self.get_candidates(current_word, prev_word=None):
+                    candidates_set[c] = None
+                candidates = list(candidates_set.keys())
 
                 # candidates = candidates[: self.cfg.top_n]
 
                 # BỎ CUỘC
                 if candidates:
                     best_sim = max(
-                        [Levenshtein.ratio(current_word, c) for c in candidates]
+                        [
+                            self.cached_levenshtein_ratio(current_word, c)
+                            for c in candidates
+                        ]
                     )
                     if best_sim < self.cfg.cutoff:
                         candidates = [current_word]

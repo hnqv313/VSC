@@ -1,3 +1,7 @@
+from functools import lru_cache
+
+
+@lru_cache(maxsize=100000)
 def to_standard_telex(word: str) -> str:
     # Chuyển đổi một từ tiếng Việt có dấu về dạng gõ Telex tiêu chuẩn.
     word = word.lower()

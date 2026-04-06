@@ -59,15 +59,10 @@ def run_check(args):
         )
 
         while True:
-            incorrect_sentence: str = ""
-            if args.text:
-                incorrect_sentence: str = args.text
-                return
-            else:
-                try:
-                    incorrect_sentence: str = input("Nhập văn bản: ")
-                except KeyboardInterrupt:
-                    sys.exit(1)
+            try:
+                incorrect_sentence: str = args.text or input("Nhập văn bản: ")
+            except KeyboardInterrupt:
+                sys.exit(1)
 
             print(f"\n{COLOR_RED}Câu gốc: {incorrect_sentence}{COLOR_RESET}")
             corrected_sentences = checker.correct_sentence(
@@ -78,6 +73,9 @@ def run_check(args):
             for idx, sent in enumerate(corrected_sentences, 1):
                 print(f"{COLOR_GREEN}  {idx}. {sent}{COLOR_RESET}")
             print("\n")
+
+            if args.text:
+                break
     except Exception as e:
         # raise e
         print(f"{COLOR_RED}Lỗi vận hành: {e}{COLOR_RESET}")
