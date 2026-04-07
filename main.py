@@ -70,8 +70,21 @@ def run_check(args):
             )
 
             print(f"{COLOR_GREEN}Các gợi ý sửa lỗi:{COLOR_RESET}")
+            orig_words = incorrect_sentence.split()
             for idx, sent in enumerate(corrected_sentences, 1):
-                print(f"{COLOR_GREEN}  {idx}. {sent}{COLOR_RESET}")
+                corr_words = sent.split()
+                print(f"  {idx}. ", end="")
+                for i, (ow, cw) in enumerate(zip(orig_words, corr_words)):
+                    if ow.lower() == cw.lower():
+                        # Giữ nguyên
+                        print(f"{COLOR_GREEN}{cw}{COLOR_RESET}", end="")
+                    else:
+                        # In màu vàng cho từ được sửa để dễ nhận biết
+                        print(f"{COLOR_YELLOW}{cw}{COLOR_RESET}", end="")
+
+                    if i < len(corr_words) - 1:
+                        print(" ", end="")
+                print()
             print("\n")
 
             if args.text:
