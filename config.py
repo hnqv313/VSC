@@ -35,10 +35,6 @@ class SpellCheckerConfig:
     #   có mặt chữ cực kỳ giống với từ user gõ, dominate điểm ngữ cảnh.
     # - Nếu GIẢM (VD: 1): AI dễ dãi với mặt chữ, dễ bị dominate bởi điểm ngữ cảnh.
 
-    freq_weight: float = 1.0
-    # Nếu tăng lên (VD: 2.0), AI sẽ cực kỳ ưu tiên các từ phổ biến (Unigram).
-    # Nếu giảm xuống (VD: 0.1), AI sẽ coi nhẹ tần suất xuất hiện của từ đó.
-
     context_weight: float = 1.0
     # Lũy thừa áp dụng cho điểm ngữ cảnh (Bigram / Tần suất đi kèm nhau).
     # - Nếu TĂNG (VD: 2): AI trở thành "Thánh đoán ý". Nó sẵn sàng thay đổi hoàn toàn
