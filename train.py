@@ -3,9 +3,15 @@ import os
 import re
 import unicodedata
 from collections import Counter
-from typing import List, Set
+from concurrent.futures import ProcessPoolExecutor
+from typing import Iterable, Iterator, List, Set
 
 import marisa_trie
+
+try:
+    from tqdm.auto import tqdm
+except ImportError:
+    tqdm = None
 
 # 1. Toàn bộ nguyên âm Tiếng Việt
 VOWELS = "aeiouyàáãạảăắằẵặẳâấầẫậẩèéẽẹẻêếềễệểìíĩịỉòóõọỏôốồỗộổơớờỡợởùúũụủưứừữựửỳýỹỵỷ"
@@ -136,68 +142,123 @@ def extract_valid_sequences(raw_text: str) -> List[List[str]]:
     return sequences
 
 
-def train_and_save_model(
-    text_corpus: str,
-    output_dir="models",
-    external_dict_path: str | None = None,
-) -> None:
-    print("Training N-grams từ Corpus...")
+def iter_valid_sequences(raw_text: str) -> Iterator[List[str]]:
+    """
+    Phiên bản streaming của extract_valid_sequences.
+    Trả từng chuỗi hợp lệ ngay khi parse xong để tránh giữ toàn bộ kết quả trong RAM.
+    """
+    text = raw_text.lower()
+    text = re.sub(r'[.,!?;:()\[\]{}""\'\n\r\t\-]', " | ", text)
 
+    current_seq: List[str] = []
+    for w in text.split():
+        if w == "|":
+            if current_seq:
+                yield current_seq
+                current_seq = []
+            continue
+
+        if is_valid_vietnamese_word(w):
+            current_seq.append(w)
+        elif current_seq:
+            yield current_seq
+            current_seq = []
+
+    if current_seq:
+        yield current_seq
+
+
+def _update_ngram_counts_from_sequences(
+    sequences: Iterable[List[str]],
+    unigram_counts: Counter[str],
+    bigram_counts: Counter[str],
+    trigram_counts: Counter[str],
+    vocab_set: Set[str],
+) -> int:
+    sequence_count = 0
+
+    for seq in sequences:
+        sequence_count += 1
+        len_seq = len(seq)
+
+        unigram_counts.update(seq)
+        vocab_set.update(seq)
+
+        if len_seq >= 2:
+            bigram_counts.update(f"{w1} {w2}" for w1, w2 in zip(seq, seq[1:]))
+
+        if len_seq >= 3:
+            trigram_counts.update(
+                f"{w1} {w2} {w3}" for w1, w2, w3 in zip(seq, seq[1:], seq[2:])
+            )
+
+    return sequence_count
+
+
+def _process_text_chunk(
+    text_chunk: str,
+) -> tuple[Counter[str], Counter[str], Counter[str], Set[str], int]:
     unigram_counts: Counter[str] = Counter()
     bigram_counts: Counter[str] = Counter()
     trigram_counts: Counter[str] = Counter()
     vocab_set: Set[str] = set()
 
-    print("Đang tách câu và phân tích ngữ cảnh...")
-    # Lấy ra tất cả các "cụm từ liên tiếp hợp lệ" từ Corpus
-    valid_sequences = extract_valid_sequences(text_corpus)
+    sequence_count = _update_ngram_counts_from_sequences(
+        iter_valid_sequences(text_chunk),
+        unigram_counts,
+        bigram_counts,
+        trigram_counts,
+        vocab_set,
+    )
 
-    for seq in valid_sequences:
-        len_seq: int = len(seq)
+    return (
+        unigram_counts,
+        bigram_counts,
+        trigram_counts,
+        vocab_set,
+        sequence_count,
+    )
 
-        # 1. Đếm Unigram và cập nhật Vocab
-        unigram_counts.update(seq)
-        vocab_set.update(seq)
 
-        # 2. Đếm Bigram
-        # Chắc chắn 100% các từ trong seq đứng sát nhau và không bị chặn bởi dấu câu nào
-        if len_seq >= 2:
-            bigrams = zip(seq, seq[1:])
-            bigram_counts.update([f"{w1} {w2}" for w1, w2 in bigrams])
+def _merge_partial_stats(
+    unigram_counts: Counter[str],
+    bigram_counts: Counter[str],
+    trigram_counts: Counter[str],
+    vocab_set: Set[str],
+    partial_stats: tuple[Counter[str], Counter[str], Counter[str], Set[str], int],
+) -> int:
+    (
+        partial_unigrams,
+        partial_bigrams,
+        partial_trigrams,
+        partial_vocab,
+        partial_sequence_count,
+    ) = partial_stats
 
-        # 3. Đếm Trigram
-        if len_seq >= 3:
-            trigrams = zip(seq, seq[1:], seq[2:])
-            trigram_counts.update([f"{w1} {w2} {w3}" for w1, w2, w3 in trigrams])
+    unigram_counts.update(partial_unigrams)
+    bigram_counts.update(partial_bigrams)
+    trigram_counts.update(partial_trigrams)
+    vocab_set.update(partial_vocab)
 
-    print(f"-> Vocab từ Corpus: {len(vocab_set)} từ.")
+    return partial_sequence_count
 
-    if external_dict_path:
-        print(f"Đang nạp từ điển ngoài: '{external_dict_path}'...")
-        try:
-            with open(external_dict_path, "r", encoding="utf-8") as f:
-                # Chỉ lấy những từ đạt chuẩn tiếng Việt trong từ điển ngoài
-                clean_external_words = []
-                for line in f:
-                    w = line.strip().lower()
-                    if is_valid_vietnamese_word(w):
-                        clean_external_words.append(w)
 
-                vocab_set.update(clean_external_words)
-            print(f"-> Đã nạp thêm từ vựng. Tổng Vocab hiện tại: {len(vocab_set)} từ.")
-        except FileNotFoundError:
-            print(f"File not found: '{external_dict_path}'. Skip this step.")
-
+def _save_model(
+    unigram_counts: Counter[str],
+    bigram_counts: Counter[str],
+    trigram_counts: Counter[str],
+    vocab_set: Set[str],
+    output_dir: str,
+) -> None:
     print("Building Marisa Tries...")
-    # Format "<I" (Unsigned Integer 32-bit): Đủ để chứa số lần xuất hiện lên tới 4.2 tỷ
     unigram_trie = marisa_trie.RecordTrie(
-        "<I", [(k, (v,)) for k, v in unigram_counts.items()]
+        "<I", ((k, (v,)) for k, v in unigram_counts.items())
     )
     bigram_trie = marisa_trie.RecordTrie(
-        "<I", [(k, (v,)) for k, v in bigram_counts.items()]
+        "<I", ((k, (v,)) for k, v in bigram_counts.items())
     )
     trigram_trie = marisa_trie.RecordTrie(
-        "<I", [(k, (v,)) for k, v in trigram_counts.items()]
+        "<I", ((k, (v,)) for k, v in trigram_counts.items())
     )
 
     os.makedirs(output_dir, exist_ok=True)
@@ -215,6 +276,124 @@ def train_and_save_model(
         json.dump(metadata, f, ensure_ascii=False, indent=4)
 
     print(f"Done! Toàn bộ model đã được lưu tại: {output_dir}/")
+
+
+def _load_external_vocab(vocab_set: Set[str], external_dict_path: str | None) -> None:
+    if not external_dict_path:
+        return
+
+    print(f"Đang nạp từ điển ngoài: '{external_dict_path}'...")
+    try:
+        with open(external_dict_path, "r", encoding="utf-8") as f:
+            for line in f:
+                w = line.strip().lower()
+                if is_valid_vietnamese_word(w):
+                    vocab_set.add(w)
+        print(f"-> Đã nạp thêm từ vựng. Tổng Vocab hiện tại: {len(vocab_set)} từ.")
+    except FileNotFoundError:
+        print(f"File not found: '{external_dict_path}'. Skip this step.")
+
+
+def _progress(iterable, total: int | None = None, desc: str = "", unit: str = "file"):
+    if tqdm is None:
+        return iterable
+
+    return tqdm(
+        iterable,
+        total=total,
+        desc=desc,
+        unit=unit,
+        dynamic_ncols=True,
+    )
+
+
+def _process_corpus_file(
+    file_path: str,
+    show_progress: bool = False,
+) -> tuple[Counter[str], Counter[str], Counter[str], Set[str], int]:
+    unigram_counts: Counter[str] = Counter()
+    bigram_counts: Counter[str] = Counter()
+    trigram_counts: Counter[str] = Counter()
+    vocab_set: Set[str] = set()
+    sequence_count = 0
+
+    file_size = os.path.getsize(file_path)
+    progress_bar = None
+    if show_progress and tqdm is not None:
+        progress_bar = tqdm(
+            total=file_size,
+            desc=os.path.basename(file_path),
+            unit="B",
+            unit_scale=True,
+            unit_divisor=1024,
+            dynamic_ncols=True,
+            leave=False,
+        )
+
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            for line in f:
+                sequence_count += _update_ngram_counts_from_sequences(
+                    iter_valid_sequences(line),
+                    unigram_counts,
+                    bigram_counts,
+                    trigram_counts,
+                    vocab_set,
+                )
+                if progress_bar is not None:
+                    progress_bar.update(len(line.encode("utf-8")))
+    finally:
+        if progress_bar is not None:
+            progress_bar.close()
+
+    return (
+        unigram_counts,
+        bigram_counts,
+        trigram_counts,
+        vocab_set,
+        sequence_count,
+    )
+
+
+def train_and_save_model(
+    text_corpus: str | Iterable[str],
+    output_dir="models",
+    external_dict_path: str | None = None,
+) -> None:
+    print("Training N-grams từ Corpus...")
+
+    unigram_counts: Counter[str] = Counter()
+    bigram_counts: Counter[str] = Counter()
+    trigram_counts: Counter[str] = Counter()
+    vocab_set: Set[str] = set()
+
+    print("Đang tách câu và phân tích ngữ cảnh...")
+    sequence_count = 0
+
+    if isinstance(text_corpus, str):
+        sequence_count = _merge_partial_stats(
+            unigram_counts,
+            bigram_counts,
+            trigram_counts,
+            vocab_set,
+            _process_text_chunk(text_corpus),
+        )
+    else:
+        for text_chunk in text_corpus:
+            sequence_count += _merge_partial_stats(
+                unigram_counts,
+                bigram_counts,
+                trigram_counts,
+                vocab_set,
+                _process_text_chunk(text_chunk),
+            )
+
+    if sequence_count == 0:
+        raise ValueError("Không có dữ liệu hợp lệ để train.")
+
+    print(f"-> Vocab từ Corpus: {len(vocab_set)} từ.")
+    _load_external_vocab(vocab_set, external_dict_path)
+    _save_model(unigram_counts, bigram_counts, trigram_counts, vocab_set, output_dir)
 
 
 def load_corpus_from_folder(folder_path: str) -> str:
@@ -242,3 +421,94 @@ def load_corpus_from_folder(folder_path: str) -> str:
 
     # Nối tất cả nội dung lại thành 1 chuỗi khổng lồ
     return "\n".join(corpus_list)
+
+
+def iter_corpus_from_folder(folder_path: str) -> Iterator[str]:
+    """
+    Đọc từng file .txt theo kiểu streaming để tránh ghép toàn bộ corpus
+    hoặc nạp trọn một file lớn vào RAM.
+    """
+    if not os.path.exists(folder_path):
+        raise FileNotFoundError(f"File not found: {folder_path}")
+
+    file_count = 0
+    for filename in os.listdir(folder_path):
+        if not filename.endswith(".txt"):
+            continue
+
+        file_path = os.path.join(folder_path, filename)
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                print(f"  + Reading: {filename}...")
+                for line in f:
+                    if line.strip():
+                        yield line
+                file_count += 1
+        except Exception as e:
+            print(f"  Error while reading {filename}: {e}")
+
+    if file_count > 0:
+        print(f"Merged {file_count} file .txt!")
+
+
+def iter_corpus_files(folder_path: str) -> Iterator[str]:
+    if not os.path.exists(folder_path):
+        raise FileNotFoundError(f"File not found: {folder_path}")
+
+    for filename in sorted(os.listdir(folder_path)):
+        if filename.endswith(".txt"):
+            yield os.path.join(folder_path, filename)
+
+
+def train_from_folder(
+    folder_path: str,
+    output_dir="models",
+    external_dict_path: str | None = None,
+    num_workers: int = 1,
+) -> None:
+    print("Training N-grams từ Corpus...")
+
+    unigram_counts: Counter[str] = Counter()
+    bigram_counts: Counter[str] = Counter()
+    trigram_counts: Counter[str] = Counter()
+    vocab_set: Set[str] = set()
+    sequence_count = 0
+
+    file_paths = list(iter_corpus_files(folder_path))
+    if not file_paths:
+        raise ValueError("Không có dữ liệu để train.")
+
+    print("Đang tách câu và phân tích ngữ cảnh...")
+    max_workers = max(1, min(num_workers, len(file_paths)))
+
+    if max_workers == 1:
+        for file_path in file_paths:
+            print(f"  + Processing: {os.path.basename(file_path)}")
+            sequence_count += _merge_partial_stats(
+                unigram_counts,
+                bigram_counts,
+                trigram_counts,
+                vocab_set,
+                _process_corpus_file(file_path, show_progress=True),
+            )
+    else:
+        print(f"  + Parallel workers: {max_workers}")
+        print("  + Progress chi tiết theo từng file chỉ hiển thị khi --workers 1")
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            results = executor.map(_process_corpus_file, file_paths)
+            progress_bar = _progress(results, total=len(file_paths), desc="Training")
+            for file_path, partial_stats in zip(file_paths, progress_bar):
+                sequence_count += _merge_partial_stats(
+                    unigram_counts,
+                    bigram_counts,
+                    trigram_counts,
+                    vocab_set,
+                    partial_stats,
+                )
+
+    if sequence_count == 0:
+        raise ValueError("Không có dữ liệu hợp lệ để train.")
+
+    print(f"-> Vocab từ Corpus: {len(vocab_set)} từ.")
+    _load_external_vocab(vocab_set, external_dict_path)
+    _save_model(unigram_counts, bigram_counts, trigram_counts, vocab_set, output_dir)

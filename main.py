@@ -4,7 +4,7 @@ import sys
 
 from config import SpellCheckerConfig
 from spellcheck import MLSpellChecker
-from train import load_corpus_from_folder, train_and_save_model
+from train import train_from_folder
 
 COLOR_GREEN = "\033[92m"
 COLOR_RED = "\033[91m"
@@ -15,20 +15,18 @@ COLOR_RESET = "\033[0m"
 
 def run_train(args):
     print(f"{COLOR_CYAN}BẮT ĐẦU HUẤN LUYỆN MÔ HÌNH{COLOR_RESET}")
-
-    full_corpus: str = load_corpus_from_folder(args.data_folder)
-
-    if not full_corpus.strip():
+    try:
+        train_from_folder(
+            folder_path=args.data_folder,
+            output_dir=args.model_path,
+            external_dict_path=args.dict_path,
+            num_workers=args.workers,
+        )
+    except ValueError:
         print(
             f"{COLOR_RED}Không có dữ liệu để train! Hãy thêm file .txt vào thư mục '{args.data_folder}'{COLOR_RESET}"
         )
         sys.exit(1)
-
-    train_and_save_model(
-        text_corpus=full_corpus,
-        output_dir=args.model_path,
-        external_dict_path=args.dict_path,
-    )
     print(f"{COLOR_GREEN}Huấn luyện hoàn tất!{COLOR_RESET}")
 
 
@@ -121,6 +119,12 @@ def main():
         type=str,
         default="models",
         help="Tên file model xuất ra (Mặc định: models)",
+    )
+    parser_train.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Số tiến trình xử lý song song theo file .txt (Mặc định: 1)",
     )
 
     parser_check = subparsers.add_parser("check", help="Chạy sửa lỗi chính tả")
