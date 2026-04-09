@@ -3,6 +3,7 @@ import os
 import sys
 
 from config import SpellCheckerConfig
+from realtime_input import run_realtime_input
 from spellcheck import MLSpellChecker
 from train import train_from_folder
 
@@ -56,9 +57,13 @@ def run_check(args):
             detail_log=args.detail,
         )
 
+        if args.realtime:
+            incorrect_sentence = run_realtime_input(checker)
+            return
+
         while True:
             try:
-                incorrect_sentence: str = args.text or input("Nhập văn bản: ")
+                incorrect_sentence = args.text or input("Nhập văn bản: ")
             except KeyboardInterrupt:
                 sys.exit(1)
 
@@ -133,6 +138,11 @@ def main():
         type=str,
         default=None,
         help="Câu cần sửa",
+    )
+    parser_check.add_argument(
+        "--realtime",
+        action="store_true",
+        help="Bật chế độ nhập realtime, tách ngữ cảnh theo dấu câu và tô màu từ đã sửa",
     )
     parser_check.add_argument(
         "--config",
