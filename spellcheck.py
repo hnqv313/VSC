@@ -80,6 +80,10 @@ class MLSpellChecker:
         sorted_unigrams = sorted(
             self.unigrams.items(), key=lambda item: item[1], reverse=True
         )
+        self.unigram_rankings: Dict[str, int] = {
+            word: rank for rank, (word, _) in enumerate(sorted_unigrams, start=1)
+        }
+        self.total_ranked_unigrams = len(sorted_unigrams)
         top_k = getattr(self.cfg, "auto_ambiguous_top_k", 50)
         self.dynamic_ambiguous_words: Set[str] = {
             word for word, _ in sorted_unigrams[:top_k]
@@ -348,11 +352,7 @@ class MLSpellChecker:
         # Final score (log-linear)
         score = (w_sim * sim_feat) + (w_ctx * ctx_feat)
 
-        # Exact match bonus
-        if candidate == error_word and candidate in getattr(
-            self, "standard_dict", set()
-        ):
-            score += getattr(self.cfg, "exact_match_bonus", 1.0)
+        score += self.calculate_exact_match_bonus(candidate, error_word)
 
         # Debug
         if self.debug and self.detail_log:
@@ -365,6 +365,25 @@ class MLSpellChecker:
             print(f"         => SCORE: {score:.4f}")
 
         return score
+
+    def calculate_exact_match_bonus(self, candidate: str, error_word: str) -> float:
+        if candidate != error_word:
+            return 0.0
+
+        rank = self.unigram_rankings.get(candidate)
+        if rank is None:
+            return 0.0
+
+        bonus_range = getattr(self.cfg, "exact_match_bonus", [0.0, 0.0])
+        if not isinstance(bonus_range, list) or len(bonus_range) != 2:
+            return 0.0
+
+        min_bonus, max_bonus = bonus_range
+        if self.total_ranked_unigrams <= 1:
+            return float(max_bonus)
+
+        rank_ratio = (rank - 1) / (self.total_ranked_unigrams - 1)
+        return float(max_bonus - ((max_bonus - min_bonus) * rank_ratio))
 
     def is_delayed_anchor(self, w: str, next_w: str | None) -> bool:
         if not hasattr(self, "standard_dict") or w not in self.standard_dict:

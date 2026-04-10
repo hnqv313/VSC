@@ -100,13 +100,23 @@ def generate_grid(search_space: Dict[str, List[Any]]) -> List[Dict[str, Any]]:
     return [dict(zip(keys, combo)) for combo in combinations]
 
 
+def get_param_complexity(value: Any) -> float:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, list):
+        return sum(get_param_complexity(item) for item in value)
+    return 0.0
+
+
 def is_better_params(p1, p2):
     """
     Rule: ưu tiên config đơn giản hơn (tổng giá trị nhỏ hơn)
     """
     if not p2:
         return True
-    return sum(p1.values()) < sum(p2.values())
+    return sum(get_param_complexity(v) for v in p1.values()) < sum(
+        get_param_complexity(v) for v in p2.values()
+    )
 
 
 def main():

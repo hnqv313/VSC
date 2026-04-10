@@ -1,7 +1,8 @@
 import dataclasses
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import List
 
 
 @dataclass
@@ -73,8 +74,9 @@ class SpellCheckerConfig:
     # - Nếu TĂNG (VD: 1.0): Tắt hoàn toàn hình phạt này. Mô hình có thể sinh ra 2 từ
     #   trùng nhau nếu dữ liệu train (Corpus) vô tình có những cụm từ đó.
 
-    exact_match_bonus: float = 1.5
-    # Nếu từ user gõ giống 100% với một từ trong wordlist.dic, nhân hệ số.
+    exact_match_bonus: List[float] = field(default_factory=lambda: [0.5, 1.5])
+    # Nếu từ user gõ giống 100% với một unigram, cộng điểm theo ranking unigram.
+    # Format: [min_bonus, max_bonus]
 
     auto_ambiguous_top_k: int = 20
     # Tự động loại bỏ Top K từ phổ biến nhất khỏi danh sách được phép Neo

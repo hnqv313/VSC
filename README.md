@@ -38,3 +38,6 @@ Write custom code to evaluate the model. You can see the example in `tune.py`,
 run `python tune.py`.
 
 For details on configuration and available hyperparameters, see `config.py`.
+`exact_match_bonus` now uses the shape `[min_bonus, max_bonus]`. In tuning search
+space, provide it as a list of candidate ranges, for example
+`[[0.3, 1.2], [0.5, 1.5], [0.8, 2.0]]`.

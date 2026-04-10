@@ -155,10 +155,10 @@ Nguồn: [spellcheck.py](spellcheck.py#L344), [config.py](config.py#L31)
 score = sim_weight * sim_feat + context_weight * ctx_feat
 ```
 
-Nếu ứng viên trùng chính xác với từ gốc và có trong từ điển chuẩn:
+Nếu ứng viên trùng chính xác với từ gốc, bonus được tính riêng theo ranking unigram:
 
 ```text
-score = score + exact_match_bonus
+score = score + exact_match_bonus_by_unigram_rank(candidate)
 ```
 
 Ý nghĩa:
@@ -200,6 +200,7 @@ accuracy = (total_score / total_cases) * 100
 - Đúng ở vị trí đầu tiên được `1.0` điểm.
 - Đúng ở vị trí thấp hơn vẫn được thưởng nhưng ít hơn.
 - `accuracy` ở đây thực chất là điểm top-k có trọng số theo thứ hạng, không phải accuracy nhị phân thuần túy.
+- Khi so sánh hai bộ tham số có cùng `accuracy`, `tune.py` ưu tiên bộ có độ phức tạp nhỏ hơn; với tham số dạng list như `exact_match_bonus = [min, max]`, độ phức tạp được tính bằng tổng các phần tử.
 
 ## 11. Các ràng buộc hình thức có tính "công thức"
 
