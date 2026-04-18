@@ -1,10 +1,11 @@
-# 1 phần của thư viện gốc được tạo ra vào một ngày đẹp trời trong một dự án khác
 from typing import Dict, List, Tuple
 
-keyboard_matrix: List[List[str]] = [
+KeyboardRowItem = str | float
+
+keyboard_matrix: List[List[KeyboardRowItem]] = [
     ["q", "w", "e", "r", "t", "y", "u", "i", "o", "p"],
-    ["0.5", "a", "s", "d", "f", "g", "h", "j", "k", "l", "0.5"],
-    ["1.5", "z", "x", "c", "v", "b", "n", "m", "1.5"],
+    [0.5, "a", "s", "d", "f", "g", "h", "j", "k", "l", 0.5],
+    [1.5, "z", "x", "c", "v", "b", "n", "m", 1.5],
 ]
 
 

@@ -9,12 +9,12 @@ from typing import Dict, List, Set, Tuple
 import marisa_trie
 from rapidfuzz import fuzz, process
 
-from config import SpellCheckerConfig
-from layout import get_keyboard_coordinates, keyboard_matrix
-from text_utils import to_standard_telex
+from keyboard_layout import get_keyboard_coordinates, keyboard_matrix
+from spell_checker_config import SpellCheckerConfig
+from telex_utils import to_standard_telex
 
 
-class MLSpellChecker:
+class NGramSpellChecker:
     def __init__(
         self,
         config: SpellCheckerConfig,
@@ -25,10 +25,9 @@ class MLSpellChecker:
         self.debug = debug
         self.detail_log = detail_log
 
-        print(f"Loading model từ thư mục: {self.cfg.model_path}...")
+        print(f"Loading dữ liệu thống kê từ thư mục: {self.cfg.stats_path}...")
 
-        # Load Metadata
-        meta_path = os.path.join(self.cfg.model_path, "model_meta.json")
+        meta_path = os.path.join(self.cfg.stats_path, "language_stats_meta.json")
         with open(meta_path, "r", encoding="utf-8") as f:
             meta = json.load(f)
 
@@ -38,13 +37,13 @@ class MLSpellChecker:
         self.total_unigrams = meta["total_unigrams"]
 
         self.unigrams = marisa_trie.RecordTrie("<I").mmap(
-            os.path.join(self.cfg.model_path, "unigrams.trie")
+            os.path.join(self.cfg.stats_path, "unigrams.trie")
         )
         self.bigrams = marisa_trie.RecordTrie("<I").mmap(
-            os.path.join(self.cfg.model_path, "bigrams.trie")
+            os.path.join(self.cfg.stats_path, "bigrams.trie")
         )
 
-        tri_path = os.path.join(self.cfg.model_path, "trigrams.trie")
+        tri_path = os.path.join(self.cfg.stats_path, "trigrams.trie")
         if os.path.exists(tri_path):
             self.trigrams = marisa_trie.RecordTrie("<I").mmap(tri_path)
         else:
@@ -97,19 +96,14 @@ class MLSpellChecker:
         print(f"Done! The dictionary has {len(vocab)} words.")
 
     def get_trie_count(self, trie, key: str) -> int:
-        """Hàm lấy tần suất từ RecordTrie một cách an toàn"""
         normalized_key = unicodedata.normalize("NFC", key)
         res = trie.get(normalized_key)
-        # res sẽ là một list, ví dụ: [(495,)]. Nếu không có key, nó trả về list rỗng []
         return res[0][0] if res else 0
 
-    # MÀNG LỌC ĐỘ DÀI (Tránh rác & Tăng tốc difflib)
     def is_valid_length(self, cand_telex: str, error_len: int) -> bool:
         cand_len = len(cand_telex)
-        # Bỏ qua từ quá ngắn (< 3) NẾU từ gốc gõ vào đủ dài (>= 3)
         if error_len >= 3 and cand_len < 3:
             return False
-        # Bỏ qua những từ chênh lệch độ dài quá 3 ký tự
         if abs(cand_len - error_len) > 3:
             return False
         return True
@@ -121,20 +115,16 @@ class MLSpellChecker:
             target, possibilities, scorer=fuzz.ratio, limit=n, score_cutoff=cutoff * 100
         )
 
-        # Kết quả trả về dạng: [('word1', 95.0, index), ('word2', 80.0, index)]
         return [r[0] for r in results]
 
-    # SINH CANDIDATE
     def get_candidates(
         self, error_word: str, prev_word: str | None = None
     ) -> List[str]:
         candidates: List[str] = []
 
-        # Ép chữ lỗi về chuẩn Telex
         error_telex = to_standard_telex(error_word)
         error_len = len(error_telex)
 
-        # Lọc từ Bigram (Những từ từng đi liền sau prev_word)
         if prev_word:
             prefix = f"{prev_word} "
             context_words: List[str] = [
@@ -142,7 +132,6 @@ class MLSpellChecker:
             ]
 
             if context_words:
-                # Tạo mapping telex tạm thời cho tập context words
                 context_telex_to_word: Dict[str, List[str]] = {}
                 for cw in context_words:
                     ct = to_standard_telex(cw)
@@ -150,14 +139,12 @@ class MLSpellChecker:
                         context_telex_to_word[ct] = []
                     context_telex_to_word[ct].append(cw)
 
-                # Áp dụng màng lọc độ dài trước khi đưa vào difflib
                 context_telex_list = [
                     t
                     for t in context_telex_to_word.keys()
                     if self.is_valid_length(t, error_len)
                 ]
 
-                # Fuzzy match trên tập con TELEX
                 context_telex_matches: List[str] = self.get_fast_close_matches(
                     error_telex,
                     context_telex_list,
@@ -165,28 +152,23 @@ class MLSpellChecker:
                     cutoff=self.cfg.cutoff,
                 )
 
-                # Ánh xạ ngược từ Telex về chữ Tiếng Việt thật
                 for ctm in context_telex_matches:
                     for real_word in context_telex_to_word[ctm]:
                         real_word = unicodedata.normalize("NFC", real_word)
                         if real_word not in candidates:
                             candidates.append(real_word)
 
-        # Bổ sung từ Unigram nếu chưa đủ số lượng top_n
         if len(candidates) < self.cfg.top_n:
             filtered_global_telex = []
-            # Logic cũ của is_valid_length: chênh lệch <= 3, và nếu error >= 3 thì cand >= 3
             min_len = 3 if error_len >= 3 else max(1, error_len - 3)
             max_len = error_len + 3
 
-            # Đảm bảo min_len không âm
             min_len = max(min_len, error_len - 3)
 
             for length in range(min_len, max_len + 1):
                 if length in self.telex_by_length:
                     filtered_global_telex.extend(self.telex_by_length[length])
 
-            # Tìm trên toàn bộ từ điển TELEX
             general_telex_matches: List[str] = self.get_fast_close_matches(
                 error_telex,
                 filtered_global_telex,
@@ -202,7 +184,6 @@ class MLSpellChecker:
         return candidates[: self.cfg.top_n]
 
     def get_kb_cost(self, char1: str, char2: str) -> float:
-        # Tính phí phạt khi gõ nhầm char1 thành char2 dựa trên tọa độ bàn phím
         if char1 == char2:
             return 0.0
 
@@ -211,36 +192,29 @@ class MLSpellChecker:
 
         x1, y1 = self.kb_coords[char1]
         x2, y2 = self.kb_coords[char2]
-        # Công thức tính khoảng cách học năm c2, c3 và calculus
         dist = math.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2)
 
-        # Chuẩn hóa khoảng cách.
         return min(dist / self.cfg.max_kb_distance, 1.0)
 
     @lru_cache(maxsize=100000)
     def keyboard_aware_similarity(self, word1: str, word2: str) -> float:
-        # Thuật toán Damerau-Levenshtein kết hợp Khoảng cách bàn phím
-
         m, n = len(word1), len(word2)
         dp = [[0.0] * (n + 1) for _ in range(m + 1)]
 
-        # Khởi tạo ma trận
         for i in range(m + 1):
             dp[i][0] = float(i)
         for j in range(n + 1):
             dp[0][j] = float(j)
 
-        # Tính toán chi phí biến đổi
         for i in range(1, m + 1):
             for j in range(1, n + 1):
                 cost = self.get_kb_cost(word1[i - 1], word2[j - 1])
                 dp[i][j] = min(
-                    dp[i - 1][j] + 1.0,  # Deletion (Xóa 1 ký tự)
-                    dp[i][j - 1] + 1.0,  # Insertion (Thêm 1 ký tự)
-                    dp[i - 1][j - 1] + cost,  # Substitution (Gõ nhầm ký tự)
+                    dp[i - 1][j] + 1.0,
+                    dp[i][j - 1] + 1.0,
+                    dp[i - 1][j - 1] + cost,
                 )
 
-                # Phép toán đảo vị trí (DAMERAU)
                 if (
                     i > 1
                     and j > 1
@@ -255,7 +229,6 @@ class MLSpellChecker:
         if max_len == 0:
             return 1.0
 
-        # Đổi từ 'Khoảng cách' (0.0 -> max_len) sang 'Độ giống nhau' (0.0 -> 1.0)
         distance = dp[m][n]
         sim = math.exp(-distance / max_len)
         final_sim = max(0.0, sim)
@@ -263,11 +236,6 @@ class MLSpellChecker:
         return max(0.0, final_sim)
 
     def calculate_context_prob(self, w1: str | None, w2: str, w3: str) -> float:
-        """
-        Nội suy xác suất kết hợp Trigram, Bigram và Unigram.
-        Trả về xác suất chuẩn hóa 0.0 -> 1.0.
-        """
-        # 1. Tính xác suất Trigram P(w3 | w1, w2)
         p_tri = 0.0
         if w1:
             bigram_w1_w2_count = self.get_trie_count(self.bigrams, f"{w1} {w2}")
@@ -280,33 +248,26 @@ class MLSpellChecker:
                 trigram_count / bigram_w1_w2_count if bigram_w1_w2_count > 0 else 0.0
             )
 
-        # 2. Tính xác suất Bigram P(w3 | w2)
         unigram_w2_count = self.get_trie_count(self.unigrams, w2)
         bigram_w2_w3_count = self.get_trie_count(self.bigrams, f"{w2} {w3}")
         p_bi = bigram_w2_w3_count / unigram_w2_count if unigram_w2_count > 0 else 0.0
 
-        # 3. Tính xác suất Unigram P(w3)
         p_uni = (
             self.get_trie_count(self.unigrams, w3) / self.total_unigrams
             if self.total_unigrams > 0
             else 0.0
         )
 
-        # Trọng số lấy từ cấu hình
         l3 = getattr(self.cfg, "lambda_3", 0.0)
         l2 = getattr(self.cfg, "lambda_2", 0.0)
         l1 = getattr(self.cfg, "lambda_1", 0.0)
 
-        # Nếu chưa đủ 2 từ để có Trigram (vd: mới đến từ thứ 2 trong câu)
-        # Ta chia lại tỷ lệ quyền lực cho Bigram và Unigram
         if not w1:
             total_l = l2 + l1
             return (l2 * p_bi + l1 * p_uni) / total_l if total_l > 0 else 0.0
 
-        # Nội suy chuẩn
         return (l3 * p_tri) + (l2 * p_bi) + (l1 * p_uni)
 
-    # TÍNH ĐIỂM
     def calculate_score(
         self,
         candidate: str,
@@ -314,7 +275,6 @@ class MLSpellChecker:
         prev_word: str | None,
         prev_prev_word: str | None = None,
     ) -> float:
-        # Normalize
         candidate = unicodedata.normalize("NFC", candidate)
         error_word = unicodedata.normalize("NFC", error_word)
 
@@ -323,38 +283,30 @@ class MLSpellChecker:
 
         eps = 1e-8
 
-        # Similarity
         sim = self.keyboard_aware_similarity(err_telex, cand_telex)
         sim_feat = math.log(sim + eps)
 
-        # Unigram
         count = self.get_trie_count(self.unigrams, candidate)
         p_uni = count / self.total_unigrams if self.total_unigrams > 0 else 0.0
 
-        # Context (LM)
         if prev_word:
             p_ctx = self.calculate_context_prob(prev_prev_word, prev_word, candidate)
 
-            # Stutter penalty
             if candidate == prev_word:
                 p_ctx *= getattr(self.cfg, "stutter_penalty", 0.0)
         else:
-            # đầu câu → fallback unigram
             p_ctx = max(p_uni, eps)
 
         ctx_feat = math.log(p_ctx + eps)
         ctx_feat = (ctx_feat + 10) / 10
 
-        # Weights
         w_sim = getattr(self.cfg, "sim_weight", 0.0)
         w_ctx = getattr(self.cfg, "context_weight", 0.0)
 
-        # Final score (log-linear)
         score = (w_sim * sim_feat) + (w_ctx * ctx_feat)
 
         score += self.calculate_exact_match_bonus(candidate, error_word)
 
-        # Debug
         if self.debug and self.detail_log:
             prev_str = prev_word if prev_word else "[START]"
             print("ERROR:", err_telex)
@@ -393,45 +345,35 @@ class MLSpellChecker:
         if next_w is None:
             return True
 
-        # Check Bigram Validation
         if f"{w} {next_w}" in self.bigrams:
             return True
         return False
 
-    # VITERBI DECODING (Sửa lỗi theo ngữ cảnh toàn câu)
     def correct_sentence(self, sentence: str, top_k: int = 5) -> List[str]:
         words: List[str] = sentence.lower().split()
         if not words:
             return []
 
-        # Cấu trúc: { "chuỗi_full_câu": (tổng_điểm, [list_từ], từ_cuối_cùng) }
         paths: Dict[str, Tuple[float, List[str], str]] = {}
 
-        # Biến cờ: Báo hiệu từ tiếp theo phải khởi tạo nhánh mới
         reset_context_next_step = True
 
-        # DUYỆT QUA CÁC TỪ CÒN LẠI
         for i, current_word in enumerate(words):
             new_paths: Dict[str, Tuple[float, List[str], str]] = {}
-            is_anchor = False
             is_garbage = False
 
             if self.debug:
                 print(f"\n[VITERBI] Từ thứ {i + 1}: '{current_word}'")
 
-            # LOOKAHEAD: Nhìn trộm từ tiếp theo
             next_word = words[i + 1] if i + 1 < len(words) else None
 
-            # NEO TỪ TRỄ (Delayed Anchor)
             if self.is_delayed_anchor(current_word, next_word):
                 candidates = [current_word]
-                is_anchor = True
                 if self.debug:
                     print(f"  ➜ Đã Neo cứng (Delayed Anchor Passed): '{current_word}'")
             else:
                 candidates_set = {}
                 if not reset_context_next_step and paths:
-                    # Lấy từ cuối cùng của nhánh từ index 2 của Tuple
                     for _, _, prev_cand in paths.values():
                         for c in self.get_candidates(current_word, prev_word=prev_cand):
                             candidates_set[c] = None
@@ -440,11 +382,7 @@ class MLSpellChecker:
                     candidates_set[c] = None
                 candidates = list(candidates_set.keys())
 
-                # candidates = candidates[: self.cfg.top_n]
-
-                # BỎ CUỘC
                 if candidates:
-                    # Truyền sẵn score_cutoff (thang điểm 0-100 của RapidFuzz)
                     best_match = process.extractOne(
                         current_word,
                         candidates,
@@ -452,7 +390,6 @@ class MLSpellChecker:
                         score_cutoff=self.cfg.cutoff * 100,
                     )
 
-                    # Nếu best_match là None, nghĩa là KHÔNG CÓ từ nào đạt ngưỡng cutoff
                     if best_match is None:
                         candidates = [current_word]
                         is_garbage = True
@@ -465,11 +402,8 @@ class MLSpellChecker:
 
             step_log_data: List[Dict] = []
 
-            # TÌM ĐƯỜNG NỐI TỐT NHẤT TỪ BƯỚC TRƯỚC SANG BƯỚC HIỆN TẠI
             for curr_cand in candidates:
-                # TRƯỜNG HỢP A: Khởi tạo nhánh mới (Do đứng đầu câu, hoặc đứng sau từ Rác)
                 if reset_context_next_step or not paths:
-                    # Truyền prev_word = None
                     step_score = self.calculate_score(
                         curr_cand,
                         current_word,
@@ -477,7 +411,6 @@ class MLSpellChecker:
                         prev_prev_word=None,
                     )
 
-                    # Nếu đang ở giữa câu mà bị reset, ta phải nhặt lại lịch sử đường đi tốt nhất trước đó
                     best_history = []
                     if paths:
                         best_past_key = max(paths.keys(), key=lambda k: paths[k][0])
@@ -486,7 +419,6 @@ class MLSpellChecker:
                     total_score = step_score
                     new_path = best_history + [curr_cand]
 
-                    # Nối chuỗi để làm key phân biệt nhánh
                     new_path_key = " ".join(new_path)
                     new_paths[new_path_key] = (total_score, new_path, curr_cand)
 
@@ -500,24 +432,17 @@ class MLSpellChecker:
                             }
                         )
 
-                # TRƯỜNG HỢP B: Nối tiếp chuỗi Markov bình thường
                 else:
-                    # Thử nối curr_cand vào tất cả các nhánh (prev_cand) của bước trước
-                    for path_key, (prev_score, prev_path, prev_cand) in paths.items():
-                        # RÚT TỪ TRƯỚC NỮA TỪ TRONG LỊCH SỬ ĐƯỜNG ĐI
-                        # prev_path có dạng: ['hôm', 'nay', 'đi'] -> [-1] là 'đi', [-2] là 'nay'
+                    for prev_score, prev_path, prev_cand in paths.values():
                         prev_prev_cand = prev_path[-2] if len(prev_path) >= 2 else None
 
-                        # Gọi tính điểm với Trigram Context
                         step_score = self.calculate_score(
                             curr_cand, current_word, prev_cand, prev_prev_cand
                         )
 
-                        # ĐIỂM TÍCH LŨY = Điểm lịch sử + Điểm bước nhảy
                         total_score = prev_score + step_score
 
                         new_path = prev_path + [curr_cand]
-                        # Nối chuỗi để làm key phân biệt nhánh
                         new_path_key = " ".join(new_path)
                         new_paths[new_path_key] = (total_score, new_path, curr_cand)
 
@@ -531,29 +456,20 @@ class MLSpellChecker:
                                 }
                             )
 
-            # Cập nhật các đường đi cho vòng lặp tiếp theo
             paths = new_paths
 
-            # QUYẾT ĐỊNH TRẠNG THÁI CHO TỪ TIẾP THEO
             if is_garbage:
-                # Nếu từ hiện tại là rác, NGẮT CHUỖI. Từ tiếp theo sẽ khởi tạo nhánh mới.
                 reset_context_next_step = True
             else:
-                # Nếu từ hiện tại là Neo cứng hoặc sửa thành công, CHO PHÉP NỐI CHUỖI.
                 reset_context_next_step = False
 
-            # BEAM SEARCH PRUNING (TỈA CÀNH)
-            # Nếu số lượng nhánh vượt quá beam_width, chỉ giữ lại những nhánh có tổng điểm cao nhất
             if len(paths) > getattr(self.cfg, "beam_width", 5):
-                # Sắp xếp paths theo điểm (score nằm ở index 0 của value tuple) giảm dần
                 sorted_paths = sorted(
                     paths.items(), key=lambda item: item[1][0], reverse=True
                 )
-                # Cắt lấy top K
                 paths = dict(sorted_paths[: self.cfg.beam_width])
 
             if self.debug and step_log_data:
-                # Sắp xếp theo score từ cao xuống thấp
                 step_log_data.sort(key=lambda x: x["score"], reverse=True)
 
                 print("-" * 82)
@@ -567,15 +483,12 @@ class MLSpellChecker:
                     )
                 print("-" * 82)
 
-        # Chọn ra các tuyến đường cuối cùng có tổng điểm cao nhất
         if paths:
-            # Lấy tất cả các giá trị (tổng_điểm, [lịch_sử_câu]) và sắp xếp theo điểm giảm dần
             sorted_paths = sorted(
                 paths.values(), key=lambda item: item[0], reverse=True
             )
 
             results = []
-            # Lấy ra tối đa top_k kết quả tốt nhất
             for _, best_sentence, _ in sorted_paths[:top_k]:
                 results.append(" ".join(best_sentence))
 

@@ -4,7 +4,7 @@ import termios
 import tty
 from dataclasses import dataclass
 
-from spellcheck import MLSpellChecker
+from spell_checker import NGramSpellChecker
 
 COLOR_GREEN = "\033[92m"
 COLOR_YELLOW = "\033[93m"
@@ -55,7 +55,7 @@ def _apply_coloring(original: str, corrected: str) -> str:
 
 
 def render_corrected_text(
-    text: str, checker: MLSpellChecker, finalize: bool = False
+    text: str, checker: NGramSpellChecker, finalize: bool = False
 ) -> str:
     tokens = _tokenize(text)
     rendered: list[str] = []
@@ -98,7 +98,7 @@ def render_corrected_text(
     return "".join(rendered)
 
 
-def _read_key(fd: int) -> str:
+def _read_key() -> str:
     char = sys.stdin.read(1)
     if char != "\x1b":
         return char
@@ -111,7 +111,7 @@ def _read_key(fd: int) -> str:
     return char + next_char + final_char
 
 
-def run_realtime_input(checker: MLSpellChecker) -> str:
+def run_realtime_input(checker: NGramSpellChecker) -> str:
     if not sys.stdin.isatty():
         raise RuntimeError("Chế độ realtime cần chạy trong terminal tương tác.")
 
@@ -133,7 +133,7 @@ def run_realtime_input(checker: MLSpellChecker) -> str:
     try:
         tty.setraw(fd)
         while True:
-            key = _read_key(fd)
+            key = _read_key()
 
             if key in {"\r", "\n"}:
                 break
