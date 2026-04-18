@@ -325,7 +325,7 @@ class MLSpellChecker:
 
         # Similarity
         sim = self.keyboard_aware_similarity(err_telex, cand_telex)
-        sim_feat = math.log(sim + 1e-8)
+        sim_feat = math.log(sim + eps)
 
         # Unigram
         count = self.get_trie_count(self.unigrams, candidate)
