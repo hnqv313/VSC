@@ -38,7 +38,6 @@ class SpellCheckerConfig:
 
     @classmethod
     def from_json(cls, json_path: str) -> "SpellCheckerConfig":
-        """Đọc cấu hình từ file JSON (nếu có) và ghi đè lên giá trị mặc định."""
         if os.path.exists(json_path):
             try:
                 with open(json_path, "r", encoding="utf-8") as f:

@@ -9,9 +9,9 @@ from typing import Dict, List, Set, Tuple
 import marisa_trie
 from rapidfuzz import fuzz, process
 
-from keyboard_layout import get_keyboard_coordinates, keyboard_matrix
-from spell_checker_config import SpellCheckerConfig
-from telex_utils import to_standard_telex
+from config import SpellCheckerConfig
+from keyboard import get_keyboard_coordinates, keyboard_matrix
+from telex import to_standard_telex
 
 
 class NGramSpellChecker:
